@@ -11,8 +11,8 @@ import (
 )
 
 // MemStore is the in-memory reference Store — the test/dev backend and the semantic reference a
-// durable (*sql.DB) store must match. Thread-safe; clock and id generator injectable. Owner is opaque;
-// "" on an owner-scoped read means any owner.
+// durable (*sql.DB) store must match. Thread-safe; clock and id generator injectable. Partition is opaque;
+// "" on an partition-scoped read means any partition.
 type MemStore struct {
 	mu          sync.Mutex
 	tickets     map[string]*Ticket
@@ -42,7 +42,7 @@ func randomID() string {
 	return hex.EncodeToString(b)
 }
 
-func ownerMatch(want, have string) bool { return want == "" || want == have }
+func partitionMatch(want, have string) bool { return want == "" || want == have }
 
 // ── Tickets ──
 
@@ -64,11 +64,11 @@ func (m *MemStore) CreateTicket(_ context.Context, t *Ticket) error {
 	return nil
 }
 
-func (m *MemStore) GetTicket(_ context.Context, owner, id string) (*Ticket, error) {
+func (m *MemStore) GetTicket(_ context.Context, partition, id string) (*Ticket, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	t, ok := m.tickets[id]
-	if !ok || !ownerMatch(owner, t.Owner) {
+	if !ok || !partitionMatch(partition, t.Partition) {
 		return nil, ErrNotFound
 	}
 	return cloneTicket(t), nil
@@ -98,27 +98,27 @@ func (m *MemStore) filterTickets(pred func(*Ticket) bool) []*Ticket {
 
 func statusMatch(filter, have string) bool { return filter == "" || filter == have }
 
-func (m *MemStore) ListTicketsByUser(_ context.Context, owner, userID, statusFilter string) ([]*Ticket, error) {
+func (m *MemStore) ListTicketsByUser(_ context.Context, partition, userID, statusFilter string) ([]*Ticket, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.filterTickets(func(t *Ticket) bool {
-		return ownerMatch(owner, t.Owner) && t.UserID == userID && statusMatch(statusFilter, t.Status)
+		return partitionMatch(partition, t.Partition) && t.UserID == userID && statusMatch(statusFilter, t.Status)
 	}), nil
 }
 
-func (m *MemStore) ListTicketsByEmail(_ context.Context, owner, email string) ([]*Ticket, error) {
+func (m *MemStore) ListTicketsByEmail(_ context.Context, partition, email string) ([]*Ticket, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.filterTickets(func(t *Ticket) bool {
-		return ownerMatch(owner, t.Owner) && strings.EqualFold(t.Email, email)
+		return partitionMatch(partition, t.Partition) && strings.EqualFold(t.Email, email)
 	}), nil
 }
 
-func (m *MemStore) ListTicketsByOrg(_ context.Context, owner, orgID, statusFilter string) ([]*Ticket, error) {
+func (m *MemStore) ListTicketsByOrg(_ context.Context, partition, orgID, statusFilter string) ([]*Ticket, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.filterTickets(func(t *Ticket) bool {
-		return ownerMatch(owner, t.Owner) && t.OrganisationID == orgID && statusMatch(statusFilter, t.Status)
+		return partitionMatch(partition, t.Partition) && t.OrganisationID == orgID && statusMatch(statusFilter, t.Status)
 	}), nil
 }
 
@@ -153,11 +153,11 @@ func (m *MemStore) ListBreachedTickets(_ context.Context, firstResponse, resolut
 	}), nil
 }
 
-func (m *MemStore) mutateTicket(owner, id string, fn func(*Ticket)) error {
+func (m *MemStore) mutateTicket(partition, id string, fn func(*Ticket)) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	t, ok := m.tickets[id]
-	if !ok || !ownerMatch(owner, t.Owner) {
+	if !ok || !partitionMatch(partition, t.Partition) {
 		return ErrNotFound
 	}
 	fn(t)
@@ -165,8 +165,8 @@ func (m *MemStore) mutateTicket(owner, id string, fn func(*Ticket)) error {
 	return nil
 }
 
-func (m *MemStore) UpdateTicketStatus(_ context.Context, owner, id, status string) error {
-	return m.mutateTicket(owner, id, func(t *Ticket) {
+func (m *MemStore) UpdateTicketStatus(_ context.Context, partition, id, status string) error {
+	return m.mutateTicket(partition, id, func(t *Ticket) {
 		t.Status = status
 		if status == "resolved" && t.ResolvedAt == nil {
 			n := m.now()
@@ -179,8 +179,8 @@ func (m *MemStore) UpdateTicketStatus(_ context.Context, owner, id, status strin
 	})
 }
 
-func (m *MemStore) UpdateTicketPriority(_ context.Context, owner, id, priority string) error {
-	return m.mutateTicket(owner, id, func(t *Ticket) { t.Priority = priority })
+func (m *MemStore) UpdateTicketPriority(_ context.Context, partition, id, priority string) error {
+	return m.mutateTicket(partition, id, func(t *Ticket) { t.Priority = priority })
 }
 
 func (m *MemStore) SetFirstResponseAt(_ context.Context, id string, at time.Time) error {
@@ -205,12 +205,12 @@ func (m *MemStore) SetExternalRef(_ context.Context, ticketID, refKey, refValue 
 	})
 }
 
-func (m *MemStore) GetTicketStats(_ context.Context, owner, userID string) (*TicketStats, error) {
+func (m *MemStore) GetTicketStats(_ context.Context, partition, userID string) (*TicketStats, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var s TicketStats
 	for _, t := range m.tickets {
-		if !ownerMatch(owner, t.Owner) || (userID != "" && t.UserID != userID) {
+		if !partitionMatch(partition, t.Partition) || (userID != "" && t.UserID != userID) {
 			continue
 		}
 		s.Total++
@@ -228,9 +228,9 @@ func (m *MemStore) GetTicketStats(_ context.Context, owner, userID string) (*Tic
 
 // ── Messages ──
 
-func (m *MemStore) ownerOwnsTicket(owner, ticketID string) bool {
+func (m *MemStore) partitionOwnsTicket(partition, ticketID string) bool {
 	t, ok := m.tickets[ticketID]
-	return ok && ownerMatch(owner, t.Owner)
+	return ok && partitionMatch(partition, t.Partition)
 }
 
 func (m *MemStore) AddMessage(_ context.Context, msg *TicketMessage) error {
@@ -248,8 +248,8 @@ func (m *MemStore) AddMessage(_ context.Context, msg *TicketMessage) error {
 	return nil
 }
 
-func (m *MemStore) listMessages(owner, ticketID string, includeInternal bool, since *time.Time) []*TicketMessage {
-	if owner != "" && !m.ownerOwnsTicket(owner, ticketID) {
+func (m *MemStore) listMessages(partition, ticketID string, includeInternal bool, since *time.Time) []*TicketMessage {
+	if partition != "" && !m.partitionOwnsTicket(partition, ticketID) {
 		return nil
 	}
 	var out []*TicketMessage
@@ -269,16 +269,16 @@ func (m *MemStore) listMessages(owner, ticketID string, includeInternal bool, si
 	return out
 }
 
-func (m *MemStore) ListMessages(_ context.Context, owner, ticketID string, includeInternal bool) ([]*TicketMessage, error) {
+func (m *MemStore) ListMessages(_ context.Context, partition, ticketID string, includeInternal bool) ([]*TicketMessage, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.listMessages(owner, ticketID, includeInternal, nil), nil
+	return m.listMessages(partition, ticketID, includeInternal, nil), nil
 }
 
-func (m *MemStore) ListMessagesSince(_ context.Context, owner, ticketID string, since time.Time, includeInternal bool) ([]*TicketMessage, error) {
+func (m *MemStore) ListMessagesSince(_ context.Context, partition, ticketID string, since time.Time, includeInternal bool) ([]*TicketMessage, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.listMessages(owner, ticketID, includeInternal, &since), nil
+	return m.listMessages(partition, ticketID, includeInternal, &since), nil
 }
 
 func (m *MemStore) SetMessageExternalRef(_ context.Context, messageID, refKey, refValue string) error {
@@ -312,10 +312,10 @@ func (m *MemStore) AddTicketEvent(_ context.Context, e *TicketEvent) error {
 	return nil
 }
 
-func (m *MemStore) ListTicketEvents(_ context.Context, owner, ticketID string) ([]*TicketEvent, error) {
+func (m *MemStore) ListTicketEvents(_ context.Context, partition, ticketID string) ([]*TicketEvent, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if owner != "" && !m.ownerOwnsTicket(owner, ticketID) {
+	if partition != "" && !m.partitionOwnsTicket(partition, ticketID) {
 		return nil, nil
 	}
 	var out []*TicketEvent
@@ -345,10 +345,10 @@ func (m *MemStore) AddAttachment(_ context.Context, a *Attachment) error {
 	return nil
 }
 
-func (m *MemStore) ListAttachments(_ context.Context, owner, ticketID string) ([]*Attachment, error) {
+func (m *MemStore) ListAttachments(_ context.Context, partition, ticketID string) ([]*Attachment, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if owner != "" && !m.ownerOwnsTicket(owner, ticketID) {
+	if partition != "" && !m.partitionOwnsTicket(partition, ticketID) {
 		return nil, nil
 	}
 	var out []*Attachment
@@ -379,11 +379,11 @@ func (m *MemStore) CreateCategory(_ context.Context, c *KBCategory) error {
 	return nil
 }
 
-func (m *MemStore) GetCategoryBySlug(_ context.Context, owner, slug string) (*KBCategory, error) {
+func (m *MemStore) GetCategoryBySlug(_ context.Context, partition, slug string) (*KBCategory, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, c := range m.categories {
-		if ownerMatch(owner, c.Owner) && c.Slug == slug {
+		if partitionMatch(partition, c.Partition) && c.Slug == slug {
 			cp := *c
 			return &cp, nil
 		}
@@ -391,12 +391,12 @@ func (m *MemStore) GetCategoryBySlug(_ context.Context, owner, slug string) (*KB
 	return nil, ErrNotFound
 }
 
-func (m *MemStore) ListCategories(_ context.Context, owner string) ([]*KBCategory, error) {
+func (m *MemStore) ListCategories(_ context.Context, partition string) ([]*KBCategory, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var out []*KBCategory
 	for _, c := range m.categories {
-		if ownerMatch(owner, c.Owner) {
+		if partitionMatch(partition, c.Partition) {
 			cp := *c
 			out = append(out, &cp)
 		}
@@ -421,11 +421,11 @@ func (m *MemStore) CreateArticle(_ context.Context, a *KBArticle) error {
 	return nil
 }
 
-func (m *MemStore) GetArticleBySlug(_ context.Context, owner, categorySlug, articleSlug string) (*KBArticle, error) {
+func (m *MemStore) GetArticleBySlug(_ context.Context, partition, categorySlug, articleSlug string) (*KBArticle, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, a := range m.articles {
-		if ownerMatch(owner, a.Owner) && a.Slug == articleSlug && (categorySlug == "" || a.CategorySlug == categorySlug) {
+		if partitionMatch(partition, a.Partition) && a.Slug == articleSlug && (categorySlug == "" || a.CategorySlug == categorySlug) {
 			cp := *a
 			return &cp, nil
 		}
@@ -433,12 +433,12 @@ func (m *MemStore) GetArticleBySlug(_ context.Context, owner, categorySlug, arti
 	return nil, ErrNotFound
 }
 
-func (m *MemStore) ListArticles(_ context.Context, owner, categorySlug string) ([]*KBArticle, error) {
+func (m *MemStore) ListArticles(_ context.Context, partition, categorySlug string) ([]*KBArticle, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var out []*KBArticle
 	for _, a := range m.articles {
-		if ownerMatch(owner, a.Owner) && (categorySlug == "" || a.CategorySlug == categorySlug) {
+		if partitionMatch(partition, a.Partition) && (categorySlug == "" || a.CategorySlug == categorySlug) {
 			cp := *a
 			out = append(out, &cp)
 		}
@@ -447,13 +447,13 @@ func (m *MemStore) ListArticles(_ context.Context, owner, categorySlug string) (
 	return out, nil
 }
 
-func (m *MemStore) SearchArticles(_ context.Context, owner, query string) ([]*KBArticle, error) {
+func (m *MemStore) SearchArticles(_ context.Context, partition, query string) ([]*KBArticle, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	q := strings.ToLower(query)
 	var out []*KBArticle
 	for _, a := range m.articles {
-		if !ownerMatch(owner, a.Owner) {
+		if !partitionMatch(partition, a.Partition) {
 			continue
 		}
 		if strings.Contains(strings.ToLower(a.Title), q) || strings.Contains(strings.ToLower(a.Content), q) {

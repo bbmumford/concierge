@@ -10,8 +10,8 @@ import (
 // SQLStore is the durable default Store over any database/sql driver — the shipped standalone store.
 // The package imports only database/sql (stdlib); the APP supplies the opened *sql.DB and registers
 // the driver (go-libsql/Turso, modernc, Postgres), so concierge pulls no driver dependency yet works
-// out of the box. Owner is an opaque column the store filters on but never interprets; an empty owner
-// ("") on an owner-scoped read matches any owner (the admin view). Times are stored as INTEGER Unix
+// out of the box. Partition is an opaque column the store filters on but never interprets; an empty partition
+// ("") on an partition-scoped read matches any partition (the admin view). Times are stored as INTEGER Unix
 // nanoseconds; a NULL means "not yet" for a *time.Time field. The Store interface remains the
 // escape-hatch for a mesh-gateway or the in-memory MemStore.
 type SQLStore struct{ db *sql.DB }
@@ -25,7 +25,7 @@ var _ Store = (*SQLStore)(nil)
 func (s *SQLStore) InitSchema(ctx context.Context) error {
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS concierge_tickets (
-			id TEXT PRIMARY KEY, number TEXT NOT NULL DEFAULT '', owner TEXT NOT NULL DEFAULT '',
+			id TEXT PRIMARY KEY, number TEXT NOT NULL DEFAULT '', partition TEXT NOT NULL DEFAULT '',
 			user_id TEXT NOT NULL DEFAULT '', email TEXT NOT NULL DEFAULT '',
 			subject TEXT NOT NULL DEFAULT '', category TEXT NOT NULL DEFAULT '',
 			priority TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT '',
@@ -36,8 +36,8 @@ func (s *SQLStore) InitSchema(ctx context.Context) error {
 			updated_at INTEGER NOT NULL DEFAULT 0, confirmed_at INTEGER, first_response_at INTEGER,
 			resolved_at INTEGER, closed_at INTEGER
 		)`,
-		`CREATE INDEX IF NOT EXISTS idx_concierge_tickets_owner ON concierge_tickets(owner)`,
-		`CREATE INDEX IF NOT EXISTS idx_concierge_tickets_user ON concierge_tickets(owner, user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_concierge_tickets_partition ON concierge_tickets(partition)`,
+		`CREATE INDEX IF NOT EXISTS idx_concierge_tickets_user ON concierge_tickets(partition, user_id)`,
 		`CREATE TABLE IF NOT EXISTS concierge_messages (
 			id TEXT PRIMARY KEY, ticket_id TEXT NOT NULL, author_type TEXT NOT NULL DEFAULT '',
 			author_id TEXT NOT NULL DEFAULT '', author_name TEXT NOT NULL DEFAULT '',
@@ -63,15 +63,15 @@ func (s *SQLStore) InitSchema(ctx context.Context) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_concierge_attachments_ticket ON concierge_attachments(ticket_id)`,
 		`CREATE TABLE IF NOT EXISTS concierge_kb_categories (
-			id TEXT PRIMARY KEY, owner TEXT NOT NULL DEFAULT '', name TEXT NOT NULL DEFAULT '',
+			id TEXT PRIMARY KEY, partition TEXT NOT NULL DEFAULT '', name TEXT NOT NULL DEFAULT '',
 			slug TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '',
 			parent_id TEXT NOT NULL DEFAULT '', sort_order INTEGER NOT NULL DEFAULT 0,
 			article_count INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL DEFAULT 0,
 			updated_at INTEGER NOT NULL DEFAULT 0
 		)`,
-		`CREATE INDEX IF NOT EXISTS idx_concierge_kb_categories_owner ON concierge_kb_categories(owner)`,
+		`CREATE INDEX IF NOT EXISTS idx_concierge_kb_categories_partition ON concierge_kb_categories(partition)`,
 		`CREATE TABLE IF NOT EXISTS concierge_kb_articles (
-			id TEXT PRIMARY KEY, owner TEXT NOT NULL DEFAULT '', title TEXT NOT NULL DEFAULT '',
+			id TEXT PRIMARY KEY, partition TEXT NOT NULL DEFAULT '', title TEXT NOT NULL DEFAULT '',
 			slug TEXT NOT NULL DEFAULT '', content TEXT NOT NULL DEFAULT '',
 			content_html TEXT NOT NULL DEFAULT '', category_id TEXT NOT NULL DEFAULT '',
 			category_name TEXT NOT NULL DEFAULT '', category_slug TEXT NOT NULL DEFAULT '',
@@ -80,7 +80,7 @@ func (s *SQLStore) InitSchema(ctx context.Context) error {
 			helpful_count INTEGER NOT NULL DEFAULT 0, metadata TEXT NOT NULL DEFAULT '',
 			created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0
 		)`,
-		`CREATE INDEX IF NOT EXISTS idx_concierge_kb_articles_owner ON concierge_kb_articles(owner)`,
+		`CREATE INDEX IF NOT EXISTS idx_concierge_kb_articles_partition ON concierge_kb_articles(partition)`,
 	}
 	for _, q := range stmts {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
@@ -164,7 +164,7 @@ func readAnyMap(s string) map[string]any {
 
 // ── Tickets ──
 
-const ticketCols = `id, number, owner, user_id, email, subject, category, priority, status, form_data,
+const ticketCols = `id, number, partition, user_id, email, subject, category, priority, status, form_data,
 	organisation_id, app_id, external_refs, source, user_agent, ip_address, created_at, updated_at,
 	confirmed_at, first_response_at, resolved_at, closed_at`
 
@@ -173,7 +173,7 @@ func scanTicket(sc interface{ Scan(...any) error }) (*Ticket, error) {
 	var formData, extRefs string
 	var created, updated int64
 	var confirmed, firstResp, resolved, closed sql.NullInt64
-	if err := sc.Scan(&t.ID, &t.Number, &t.Owner, &t.UserID, &t.Email, &t.Subject, &t.Category,
+	if err := sc.Scan(&t.ID, &t.Number, &t.Partition, &t.UserID, &t.Email, &t.Subject, &t.Category,
 		&t.Priority, &t.Status, &formData, &t.OrganisationID, &t.AppID, &extRefs, &t.Source,
 		&t.UserAgent, &t.IPAddress, &created, &updated, &confirmed, &firstResp, &resolved, &closed); err != nil {
 		return nil, err
@@ -203,16 +203,16 @@ func (s *SQLStore) CreateTicket(ctx context.Context, t *Ticket) error {
 	t.UpdatedAt = now
 	_, err := s.db.ExecContext(ctx, `INSERT INTO concierge_tickets (`+ticketCols+`)
 		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		t.ID, t.Number, t.Owner, t.UserID, t.Email, t.Subject, t.Category, t.Priority, t.Status,
+		t.ID, t.Number, t.Partition, t.UserID, t.Email, t.Subject, t.Category, t.Priority, t.Status,
 		jsonAnyMap(t.FormData), t.OrganisationID, t.AppID, jsonStrMap(t.ExternalRefs), t.Source,
 		t.UserAgent, t.IPAddress, tnanos(t.CreatedAt), tnanos(t.UpdatedAt), ptrNanos(t.ConfirmedAt),
 		ptrNanos(t.FirstResponseAt), ptrNanos(t.ResolvedAt), ptrNanos(t.ClosedAt))
 	return err
 }
 
-func (s *SQLStore) GetTicket(ctx context.Context, owner, id string) (*Ticket, error) {
+func (s *SQLStore) GetTicket(ctx context.Context, partition, id string) (*Ticket, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT `+ticketCols+` FROM concierge_tickets
-		WHERE id = ? AND (? = '' OR owner = ?)`, id, owner, owner)
+		WHERE id = ? AND (? = '' OR partition = ?)`, id, partition, partition)
 	t, err := scanTicket(row)
 	if err == sql.ErrNoRows {
 		return nil, ErrNotFound
@@ -253,18 +253,18 @@ func (s *SQLStore) queryTickets(ctx context.Context, where string, args ...any) 
 	return out, rows.Err()
 }
 
-func (s *SQLStore) ListTicketsByUser(ctx context.Context, owner, userID, statusFilter string) ([]*Ticket, error) {
-	return s.queryTickets(ctx, `(? = '' OR owner = ?) AND user_id = ? AND (? = '' OR status = ?)`,
-		owner, owner, userID, statusFilter, statusFilter)
+func (s *SQLStore) ListTicketsByUser(ctx context.Context, partition, userID, statusFilter string) ([]*Ticket, error) {
+	return s.queryTickets(ctx, `(? = '' OR partition = ?) AND user_id = ? AND (? = '' OR status = ?)`,
+		partition, partition, userID, statusFilter, statusFilter)
 }
 
-func (s *SQLStore) ListTicketsByEmail(ctx context.Context, owner, email string) ([]*Ticket, error) {
-	return s.queryTickets(ctx, `(? = '' OR owner = ?) AND lower(email) = lower(?)`, owner, owner, email)
+func (s *SQLStore) ListTicketsByEmail(ctx context.Context, partition, email string) ([]*Ticket, error) {
+	return s.queryTickets(ctx, `(? = '' OR partition = ?) AND lower(email) = lower(?)`, partition, partition, email)
 }
 
-func (s *SQLStore) ListTicketsByOrg(ctx context.Context, owner, orgID, statusFilter string) ([]*Ticket, error) {
-	return s.queryTickets(ctx, `(? = '' OR owner = ?) AND organisation_id = ? AND (? = '' OR status = ?)`,
-		owner, owner, orgID, statusFilter, statusFilter)
+func (s *SQLStore) ListTicketsByOrg(ctx context.Context, partition, orgID, statusFilter string) ([]*Ticket, error) {
+	return s.queryTickets(ctx, `(? = '' OR partition = ?) AND organisation_id = ? AND (? = '' OR status = ?)`,
+		partition, partition, orgID, statusFilter, statusFilter)
 }
 
 func (s *SQLStore) ListAllTickets(ctx context.Context, statusFilter, categoryFilter string, limit, offset int) ([]*Ticket, int, error) {
@@ -311,10 +311,10 @@ func (s *SQLStore) ListBreachedTickets(ctx context.Context, firstResponse, resol
 		int64(resolution), nowN, int64(resolution))
 }
 
-func (s *SQLStore) touchTicket(ctx context.Context, owner, id, setClause string, args ...any) error {
-	full := append(args, time.Now().UnixNano(), id, owner, owner)
+func (s *SQLStore) touchTicket(ctx context.Context, partition, id, setClause string, args ...any) error {
+	full := append(args, time.Now().UnixNano(), id, partition, partition)
 	res, err := s.db.ExecContext(ctx, `UPDATE concierge_tickets SET `+setClause+`, updated_at = ?
-		WHERE id = ? AND (? = '' OR owner = ?)`, full...)
+		WHERE id = ? AND (? = '' OR partition = ?)`, full...)
 	if err != nil {
 		return err
 	}
@@ -324,7 +324,7 @@ func (s *SQLStore) touchTicket(ctx context.Context, owner, id, setClause string,
 	return nil
 }
 
-func (s *SQLStore) UpdateTicketStatus(ctx context.Context, owner, id, status string) error {
+func (s *SQLStore) UpdateTicketStatus(ctx context.Context, partition, id, status string) error {
 	// Reaching a terminal status stamps its timestamp once (COALESCE keeps a prior stamp).
 	set := `status = ?`
 	args := []any{status}
@@ -336,11 +336,11 @@ func (s *SQLStore) UpdateTicketStatus(ctx context.Context, owner, id, status str
 		set += `, closed_at = COALESCE(closed_at, ?)`
 		args = append(args, time.Now().UnixNano())
 	}
-	return s.touchTicket(ctx, owner, id, set, args...)
+	return s.touchTicket(ctx, partition, id, set, args...)
 }
 
-func (s *SQLStore) UpdateTicketPriority(ctx context.Context, owner, id, priority string) error {
-	return s.touchTicket(ctx, owner, id, `priority = ?`, priority)
+func (s *SQLStore) UpdateTicketPriority(ctx context.Context, partition, id, priority string) error {
+	return s.touchTicket(ctx, partition, id, `priority = ?`, priority)
 }
 
 func (s *SQLStore) SetFirstResponseAt(ctx context.Context, id string, at time.Time) error {
@@ -364,10 +364,10 @@ func (s *SQLStore) SetExternalRef(ctx context.Context, ticketID, refKey, refValu
 	return s.touchTicket(ctx, "", ticketID, set, refKey, refValue)
 }
 
-func (s *SQLStore) GetTicketStats(ctx context.Context, owner, userID string) (*TicketStats, error) {
+func (s *SQLStore) GetTicketStats(ctx context.Context, partition, userID string) (*TicketStats, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT status, COUNT(*) FROM concierge_tickets
-		WHERE (? = '' OR owner = ?) AND (? = '' OR user_id = ?) GROUP BY status`,
-		owner, owner, userID, userID)
+		WHERE (? = '' OR partition = ?) AND (? = '' OR user_id = ?) GROUP BY status`,
+		partition, partition, userID, userID)
 	if err != nil {
 		return nil, err
 	}

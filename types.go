@@ -1,7 +1,7 @@
 // Package concierge is the scope-agnostic help-desk / support system (extracted from the HSTLES
 // support domain). It owns tickets, their message threads, an audit event log, attachments, and a
 // knowledge base — over an injected store, with pluggable delivery/thread channels and an opaque
-// owner-scope the system never interprets. The primary axis (was a baked tenant) is an opaque Owner;
+// partition-scope the system never interprets. The primary axis (was a baked tenant) is an opaque Partition;
 // org/app are opaque secondary fields; the Discord-specific thread linkage is generalised to
 // channel-agnostic ExternalRefs so any channel adapter (Discord, email, Slack) can link a ticket to
 // its external thread and look the ticket up by it. Times are time.Time; nil *time.Time means "not
@@ -10,12 +10,12 @@ package concierge
 
 import "time"
 
-// Ticket is a support request. Owner is the opaque owner-scope (the store partitions on it, never
+// Ticket is a support request. Partition is the opaque partition-scope (the store partitions on it, never
 // interprets it); OrganisationID/AppID are opaque secondary grouping fields a consumer may filter by.
 type Ticket struct {
 	ID       string
 	Number   string
-	Owner    string // opaque owner-scope (was tenant)
+	Partition    string // opaque partition-scope (was tenant)
 	UserID   string
 	Email    string
 	Subject  string
@@ -93,10 +93,10 @@ type Attachment struct {
 	CreatedAt   time.Time
 }
 
-// KBCategory is a knowledge-base category (a tree via ParentID). Owner is the opaque owner-scope.
+// KBCategory is a knowledge-base category (a tree via ParentID). Partition is the opaque partition-scope.
 type KBCategory struct {
 	ID           string
-	Owner        string
+	Partition        string
 	Name         string
 	Slug         string
 	Description  string
@@ -110,7 +110,7 @@ type KBCategory struct {
 // KBArticle is a knowledge-base article.
 type KBArticle struct {
 	ID           string
-	Owner        string
+	Partition        string
 	Title        string
 	Slug         string
 	Content      string

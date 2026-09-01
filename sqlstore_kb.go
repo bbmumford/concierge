@@ -9,15 +9,15 @@ import (
 
 // ── Messages ──
 
-// ownerOwnsTicket reports whether an owner-scoped caller may read a ticket's children. An empty owner
-// is the admin view and always passes; otherwise the ticket must exist under that owner.
-func (s *SQLStore) ownerOwnsTicket(ctx context.Context, owner, ticketID string) (bool, error) {
-	if owner == "" {
+// partitionOwnsTicket reports whether an partition-scoped caller may read a ticket's children. An empty partition
+// is the admin view and always passes; otherwise the ticket must exist under that partition.
+func (s *SQLStore) partitionOwnsTicket(ctx context.Context, partition, ticketID string) (bool, error) {
+	if partition == "" {
 		return true, nil
 	}
 	var n int
-	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM concierge_tickets WHERE id = ? AND owner = ?`,
-		ticketID, owner).Scan(&n)
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM concierge_tickets WHERE id = ? AND partition = ?`,
+		ticketID, partition).Scan(&n)
 	return n > 0, err
 }
 
@@ -65,8 +65,8 @@ func boolInt(b bool) int {
 	return 0
 }
 
-func (s *SQLStore) listMessages(ctx context.Context, owner, ticketID string, includeInternal bool, since *time.Time) ([]*TicketMessage, error) {
-	ok, err := s.ownerOwnsTicket(ctx, owner, ticketID)
+func (s *SQLStore) listMessages(ctx context.Context, partition, ticketID string, includeInternal bool, since *time.Time) ([]*TicketMessage, error) {
+	ok, err := s.partitionOwnsTicket(ctx, partition, ticketID)
 	if err != nil || !ok {
 		return nil, err
 	}
@@ -96,12 +96,12 @@ func (s *SQLStore) listMessages(ctx context.Context, owner, ticketID string, inc
 	return out, rows.Err()
 }
 
-func (s *SQLStore) ListMessages(ctx context.Context, owner, ticketID string, includeInternal bool) ([]*TicketMessage, error) {
-	return s.listMessages(ctx, owner, ticketID, includeInternal, nil)
+func (s *SQLStore) ListMessages(ctx context.Context, partition, ticketID string, includeInternal bool) ([]*TicketMessage, error) {
+	return s.listMessages(ctx, partition, ticketID, includeInternal, nil)
 }
 
-func (s *SQLStore) ListMessagesSince(ctx context.Context, owner, ticketID string, since time.Time, includeInternal bool) ([]*TicketMessage, error) {
-	return s.listMessages(ctx, owner, ticketID, includeInternal, &since)
+func (s *SQLStore) ListMessagesSince(ctx context.Context, partition, ticketID string, since time.Time, includeInternal bool) ([]*TicketMessage, error) {
+	return s.listMessages(ctx, partition, ticketID, includeInternal, &since)
 }
 
 func (s *SQLStore) SetMessageExternalRef(ctx context.Context, messageID, refKey, refValue string) error {
@@ -134,8 +134,8 @@ func (s *SQLStore) AddTicketEvent(ctx context.Context, e *TicketEvent) error {
 	return err
 }
 
-func (s *SQLStore) ListTicketEvents(ctx context.Context, owner, ticketID string) ([]*TicketEvent, error) {
-	ok, err := s.ownerOwnsTicket(ctx, owner, ticketID)
+func (s *SQLStore) ListTicketEvents(ctx context.Context, partition, ticketID string) ([]*TicketEvent, error) {
+	ok, err := s.partitionOwnsTicket(ctx, partition, ticketID)
 	if err != nil || !ok {
 		return nil, err
 	}
@@ -177,8 +177,8 @@ func (s *SQLStore) AddAttachment(ctx context.Context, a *Attachment) error {
 	return err
 }
 
-func (s *SQLStore) ListAttachments(ctx context.Context, owner, ticketID string) ([]*Attachment, error) {
-	ok, err := s.ownerOwnsTicket(ctx, owner, ticketID)
+func (s *SQLStore) ListAttachments(ctx context.Context, partition, ticketID string) ([]*Attachment, error) {
+	ok, err := s.partitionOwnsTicket(ctx, partition, ticketID)
 	if err != nil || !ok {
 		return nil, err
 	}
@@ -205,13 +205,13 @@ func (s *SQLStore) ListAttachments(ctx context.Context, owner, ticketID string) 
 
 // ── Knowledge base ──
 
-const categoryCols = `id, owner, name, slug, description, parent_id, sort_order, article_count,
+const categoryCols = `id, partition, name, slug, description, parent_id, sort_order, article_count,
 	created_at, updated_at`
 
 func scanCategory(sc interface{ Scan(...any) error }) (*KBCategory, error) {
 	var c KBCategory
 	var created, updated int64
-	if err := sc.Scan(&c.ID, &c.Owner, &c.Name, &c.Slug, &c.Description, &c.ParentID, &c.SortOrder,
+	if err := sc.Scan(&c.ID, &c.Partition, &c.Name, &c.Slug, &c.Description, &c.ParentID, &c.SortOrder,
 		&c.ArticleCount, &created, &updated); err != nil {
 		return nil, err
 	}
@@ -231,14 +231,14 @@ func (s *SQLStore) CreateCategory(ctx context.Context, c *KBCategory) error {
 	c.UpdatedAt = now
 	_, err := s.db.ExecContext(ctx, `INSERT INTO concierge_kb_categories (`+categoryCols+`)
 		VALUES (?,?,?,?,?,?,?,?,?,?)`,
-		c.ID, c.Owner, c.Name, c.Slug, c.Description, c.ParentID, c.SortOrder, c.ArticleCount,
+		c.ID, c.Partition, c.Name, c.Slug, c.Description, c.ParentID, c.SortOrder, c.ArticleCount,
 		tnanos(c.CreatedAt), tnanos(c.UpdatedAt))
 	return err
 }
 
-func (s *SQLStore) GetCategoryBySlug(ctx context.Context, owner, slug string) (*KBCategory, error) {
+func (s *SQLStore) GetCategoryBySlug(ctx context.Context, partition, slug string) (*KBCategory, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT `+categoryCols+` FROM concierge_kb_categories
-		WHERE slug = ? AND (? = '' OR owner = ?) LIMIT 1`, slug, owner, owner)
+		WHERE slug = ? AND (? = '' OR partition = ?) LIMIT 1`, slug, partition, partition)
 	c, err := scanCategory(row)
 	if err == sql.ErrNoRows {
 		return nil, ErrNotFound
@@ -246,9 +246,9 @@ func (s *SQLStore) GetCategoryBySlug(ctx context.Context, owner, slug string) (*
 	return c, err
 }
 
-func (s *SQLStore) ListCategories(ctx context.Context, owner string) ([]*KBCategory, error) {
+func (s *SQLStore) ListCategories(ctx context.Context, partition string) ([]*KBCategory, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+categoryCols+` FROM concierge_kb_categories
-		WHERE (? = '' OR owner = ?) ORDER BY sort_order ASC`, owner, owner)
+		WHERE (? = '' OR partition = ?) ORDER BY sort_order ASC`, partition, partition)
 	if err != nil {
 		return nil, err
 	}
@@ -264,14 +264,14 @@ func (s *SQLStore) ListCategories(ctx context.Context, owner string) ([]*KBCateg
 	return out, rows.Err()
 }
 
-const articleCols = `id, owner, title, slug, content, content_html, category_id, category_name,
+const articleCols = `id, partition, title, slug, content, content_html, category_id, category_name,
 	category_slug, author_id, author_name, status, view_count, helpful_count, metadata,
 	created_at, updated_at`
 
 func scanArticle(sc interface{ Scan(...any) error }) (*KBArticle, error) {
 	var a KBArticle
 	var created, updated int64
-	if err := sc.Scan(&a.ID, &a.Owner, &a.Title, &a.Slug, &a.Content, &a.ContentHTML, &a.CategoryID,
+	if err := sc.Scan(&a.ID, &a.Partition, &a.Title, &a.Slug, &a.Content, &a.ContentHTML, &a.CategoryID,
 		&a.CategoryName, &a.CategorySlug, &a.AuthorID, &a.AuthorName, &a.Status, &a.ViewCount,
 		&a.HelpfulCount, &a.Metadata, &created, &updated); err != nil {
 		return nil, err
@@ -292,16 +292,16 @@ func (s *SQLStore) CreateArticle(ctx context.Context, a *KBArticle) error {
 	a.UpdatedAt = now
 	_, err := s.db.ExecContext(ctx, `INSERT INTO concierge_kb_articles (`+articleCols+`)
 		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		a.ID, a.Owner, a.Title, a.Slug, a.Content, a.ContentHTML, a.CategoryID, a.CategoryName,
+		a.ID, a.Partition, a.Title, a.Slug, a.Content, a.ContentHTML, a.CategoryID, a.CategoryName,
 		a.CategorySlug, a.AuthorID, a.AuthorName, a.Status, a.ViewCount, a.HelpfulCount, a.Metadata,
 		tnanos(a.CreatedAt), tnanos(a.UpdatedAt))
 	return err
 }
 
-func (s *SQLStore) GetArticleBySlug(ctx context.Context, owner, categorySlug, articleSlug string) (*KBArticle, error) {
+func (s *SQLStore) GetArticleBySlug(ctx context.Context, partition, categorySlug, articleSlug string) (*KBArticle, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT `+articleCols+` FROM concierge_kb_articles
-		WHERE slug = ? AND (? = '' OR owner = ?) AND (? = '' OR category_slug = ?) LIMIT 1`,
-		articleSlug, owner, owner, categorySlug, categorySlug)
+		WHERE slug = ? AND (? = '' OR partition = ?) AND (? = '' OR category_slug = ?) LIMIT 1`,
+		articleSlug, partition, partition, categorySlug, categorySlug)
 	a, err := scanArticle(row)
 	if err == sql.ErrNoRows {
 		return nil, ErrNotFound
@@ -327,18 +327,18 @@ func (s *SQLStore) queryArticles(ctx context.Context, where string, args ...any)
 	return out, rows.Err()
 }
 
-func (s *SQLStore) ListArticles(ctx context.Context, owner, categorySlug string) ([]*KBArticle, error) {
-	return s.queryArticles(ctx, `(? = '' OR owner = ?) AND (? = '' OR category_slug = ?)`,
-		owner, owner, categorySlug, categorySlug)
+func (s *SQLStore) ListArticles(ctx context.Context, partition, categorySlug string) ([]*KBArticle, error) {
+	return s.queryArticles(ctx, `(? = '' OR partition = ?) AND (? = '' OR category_slug = ?)`,
+		partition, partition, categorySlug, categorySlug)
 }
 
-func (s *SQLStore) SearchArticles(ctx context.Context, owner, query string) ([]*KBArticle, error) {
-	// Case-insensitive substring over title/content, owner-scoped. A LIKE with lower() keeps the
+func (s *SQLStore) SearchArticles(ctx context.Context, partition, query string) ([]*KBArticle, error) {
+	// Case-insensitive substring over title/content, partition-scoped. A LIKE with lower() keeps the
 	// contract identical to the MemStore reference without a full-text index dependency.
 	like := "%" + strings.ToLower(query) + "%"
 	return s.queryArticles(ctx,
-		`(? = '' OR owner = ?) AND (lower(title) LIKE ? OR lower(content) LIKE ?)`,
-		owner, owner, like, like)
+		`(? = '' OR partition = ?) AND (lower(title) LIKE ? OR lower(content) LIKE ?)`,
+		partition, partition, like, like)
 }
 
 func (s *SQLStore) IncrementArticleViewCount(ctx context.Context, articleID string) error {
