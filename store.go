@@ -23,7 +23,7 @@ type Store interface {
 	GetTicketByExternalRef(ctx context.Context, refKey, refValue string) (*Ticket, error)
 	ListTicketsByUser(ctx context.Context, partition, userID, statusFilter string) ([]*Ticket, error)
 	ListTicketsByEmail(ctx context.Context, partition, email string) ([]*Ticket, error)
-	ListTicketsByOrg(ctx context.Context, partition, orgID, statusFilter string) ([]*Ticket, error)
+	ListTicketsByGroup(ctx context.Context, partition, groupID, statusFilter string) ([]*Ticket, error)
 	// ListAllTickets is the admin view across partitions, with optional status/category filters + paging;
 	// returns the page and the total matching count.
 	ListAllTickets(ctx context.Context, statusFilter, categoryFilter string, limit, offset int) (page []*Ticket, total int, err error)

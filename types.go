@@ -11,7 +11,7 @@ package concierge
 import "time"
 
 // Ticket is a support request. Partition is the opaque partition-scope (the store partitions on it, never
-// interprets it); OrganisationID/AppID are opaque secondary grouping fields a consumer may filter by.
+// interprets it); GroupID/AppID are opaque secondary grouping fields a consumer may filter by.
 type Ticket struct {
 	ID       string
 	Number   string
@@ -24,7 +24,7 @@ type Ticket struct {
 	Status   string
 	FormData map[string]any
 
-	OrganisationID string // opaque secondary field
+	GroupID string // opaque secondary field
 	AppID          string // opaque secondary field
 
 	// ExternalRefs links the ticket to external channel threads, keyed by an opaque ref name a channel

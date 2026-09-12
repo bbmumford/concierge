@@ -29,7 +29,7 @@ func (s *SQLStore) InitSchema(ctx context.Context) error {
 			user_id TEXT NOT NULL DEFAULT '', email TEXT NOT NULL DEFAULT '',
 			subject TEXT NOT NULL DEFAULT '', category TEXT NOT NULL DEFAULT '',
 			priority TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT '',
-			form_data TEXT NOT NULL DEFAULT '{}', organisation_id TEXT NOT NULL DEFAULT '',
+			form_data TEXT NOT NULL DEFAULT '{}', group_id TEXT NOT NULL DEFAULT '',
 			app_id TEXT NOT NULL DEFAULT '', external_refs TEXT NOT NULL DEFAULT '{}',
 			source TEXT NOT NULL DEFAULT '', user_agent TEXT NOT NULL DEFAULT '',
 			ip_address TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL DEFAULT 0,
@@ -165,7 +165,7 @@ func readAnyMap(s string) map[string]any {
 // ── Tickets ──
 
 const ticketCols = `id, number, partition, user_id, email, subject, category, priority, status, form_data,
-	organisation_id, app_id, external_refs, source, user_agent, ip_address, created_at, updated_at,
+	group_id, app_id, external_refs, source, user_agent, ip_address, created_at, updated_at,
 	confirmed_at, first_response_at, resolved_at, closed_at`
 
 func scanTicket(sc interface{ Scan(...any) error }) (*Ticket, error) {
@@ -174,7 +174,7 @@ func scanTicket(sc interface{ Scan(...any) error }) (*Ticket, error) {
 	var created, updated int64
 	var confirmed, firstResp, resolved, closed sql.NullInt64
 	if err := sc.Scan(&t.ID, &t.Number, &t.Partition, &t.UserID, &t.Email, &t.Subject, &t.Category,
-		&t.Priority, &t.Status, &formData, &t.OrganisationID, &t.AppID, &extRefs, &t.Source,
+		&t.Priority, &t.Status, &formData, &t.GroupID, &t.AppID, &extRefs, &t.Source,
 		&t.UserAgent, &t.IPAddress, &created, &updated, &confirmed, &firstResp, &resolved, &closed); err != nil {
 		return nil, err
 	}
@@ -204,7 +204,7 @@ func (s *SQLStore) CreateTicket(ctx context.Context, t *Ticket) error {
 	_, err := s.db.ExecContext(ctx, `INSERT INTO concierge_tickets (`+ticketCols+`)
 		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		t.ID, t.Number, t.Partition, t.UserID, t.Email, t.Subject, t.Category, t.Priority, t.Status,
-		jsonAnyMap(t.FormData), t.OrganisationID, t.AppID, jsonStrMap(t.ExternalRefs), t.Source,
+		jsonAnyMap(t.FormData), t.GroupID, t.AppID, jsonStrMap(t.ExternalRefs), t.Source,
 		t.UserAgent, t.IPAddress, tnanos(t.CreatedAt), tnanos(t.UpdatedAt), ptrNanos(t.ConfirmedAt),
 		ptrNanos(t.FirstResponseAt), ptrNanos(t.ResolvedAt), ptrNanos(t.ClosedAt))
 	return err
@@ -262,9 +262,9 @@ func (s *SQLStore) ListTicketsByEmail(ctx context.Context, partition, email stri
 	return s.queryTickets(ctx, `(? = '' OR partition = ?) AND lower(email) = lower(?)`, partition, partition, email)
 }
 
-func (s *SQLStore) ListTicketsByOrg(ctx context.Context, partition, orgID, statusFilter string) ([]*Ticket, error) {
-	return s.queryTickets(ctx, `(? = '' OR partition = ?) AND organisation_id = ? AND (? = '' OR status = ?)`,
-		partition, partition, orgID, statusFilter, statusFilter)
+func (s *SQLStore) ListTicketsByGroup(ctx context.Context, partition, groupID, statusFilter string) ([]*Ticket, error) {
+	return s.queryTickets(ctx, `(? = '' OR partition = ?) AND group_id = ? AND (? = '' OR status = ?)`,
+		partition, partition, groupID, statusFilter, statusFilter)
 }
 
 func (s *SQLStore) ListAllTickets(ctx context.Context, statusFilter, categoryFilter string, limit, offset int) ([]*Ticket, int, error) {

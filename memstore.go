@@ -114,11 +114,11 @@ func (m *MemStore) ListTicketsByEmail(_ context.Context, partition, email string
 	}), nil
 }
 
-func (m *MemStore) ListTicketsByOrg(_ context.Context, partition, orgID, statusFilter string) ([]*Ticket, error) {
+func (m *MemStore) ListTicketsByGroup(_ context.Context, partition, groupID, statusFilter string) ([]*Ticket, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.filterTickets(func(t *Ticket) bool {
-		return partitionMatch(partition, t.Partition) && t.OrganisationID == orgID && statusMatch(statusFilter, t.Status)
+		return partitionMatch(partition, t.Partition) && t.GroupID == groupID && statusMatch(statusFilter, t.Status)
 	}), nil
 }
 
