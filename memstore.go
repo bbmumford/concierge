@@ -11,8 +11,10 @@ import (
 )
 
 // MemStore is the in-memory reference Store — the test/dev backend and the semantic reference a
-// durable (*sql.DB) store must match. Thread-safe; clock and id generator injectable. Partition is opaque;
-// "" on an partition-scoped read means any partition.
+// durable (*sql.DB) store must match. Thread-safe; clock and id generator injectable. Partition is
+// opaque: the store filters on it and never reads it. An empty partition on a partition-scoped read
+// matches nothing, the same as SQLStore, because a test written against this store is what certifies
+// the other's behaviour.
 type MemStore struct {
 	mu          sync.Mutex
 	tickets     map[string]*Ticket
@@ -42,7 +44,16 @@ func randomID() string {
 	return hex.EncodeToString(b)
 }
 
-func partitionMatch(want, have string) bool { return want == "" || want == have }
+// partitionMatch reports whether a row stored under partition `have` is visible to
+// a caller asking for partition `want`. Every ticket and knowledge-base lookup in
+// this store filters through it.
+//
+// An empty `want` names no partition and matches nothing. SQLStore answers the
+// same way — it binds the partition straight into the WHERE clause, where an empty
+// string matches only rows stored under an empty partition — and the two have to
+// agree, because tests written against this store are what certify the other's
+// behaviour.
+func partitionMatch(want, have string) bool { return want != "" && want == have }
 
 // ── Tickets ──
 
@@ -165,6 +176,27 @@ func (m *MemStore) mutateTicket(partition, id string, fn func(*Ticket)) error {
 	return nil
 }
 
+// mutateTicketUnscoped edits a ticket without a partition filter. Only the two
+// Store methods that take no partition use it — SetFirstResponseAt, stamping an
+// SLA clock, and SetExternalRef, linking a channel ref the ticket's own partition
+// did not supply. Both act on a ticket the caller already identified rather than
+// searching for one, so neither widens what a caller can see.
+//
+// It is a separate method because mutateTicket's filter now refuses an empty
+// partition: routing these through it with "" would make an unset partition mean
+// "every partition" again, which is the property being removed.
+func (m *MemStore) mutateTicketUnscoped(id string, fn func(*Ticket)) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.tickets[id]
+	if !ok {
+		return ErrNotFound
+	}
+	fn(t)
+	t.UpdatedAt = m.now()
+	return nil
+}
+
 func (m *MemStore) UpdateTicketStatus(_ context.Context, partition, id, status string) error {
 	return m.mutateTicket(partition, id, func(t *Ticket) {
 		t.Status = status
@@ -184,7 +216,7 @@ func (m *MemStore) UpdateTicketPriority(_ context.Context, partition, id, priori
 }
 
 func (m *MemStore) SetFirstResponseAt(_ context.Context, id string, at time.Time) error {
-	return m.mutateTicket("", id, func(t *Ticket) {
+	return m.mutateTicketUnscoped(id, func(t *Ticket) {
 		if t.FirstResponseAt == nil {
 			a := at
 			t.FirstResponseAt = &a
@@ -193,7 +225,7 @@ func (m *MemStore) SetFirstResponseAt(_ context.Context, id string, at time.Time
 }
 
 func (m *MemStore) SetExternalRef(_ context.Context, ticketID, refKey, refValue string) error {
-	return m.mutateTicket("", ticketID, func(t *Ticket) {
+	return m.mutateTicketUnscoped(ticketID, func(t *Ticket) {
 		if t.ExternalRefs == nil {
 			t.ExternalRefs = map[string]string{}
 		}
@@ -203,6 +235,37 @@ func (m *MemStore) SetExternalRef(_ context.Context, ticketID, refKey, refValue 
 			t.ExternalRefs[refKey] = refValue
 		}
 	})
+}
+
+// ResolveTicketPartition names the partition a ticket lives under and records the
+// request as a ticket event before answering, so the partition that owns the
+// ticket can see who looked. It is the one read here not confined to a single
+// partition; callers take the partition it returns and use the ordinary scoped
+// reads, which is what keeps the reach to a single attributable step.
+//
+// actorType, actorID and reason are required — an unattributed privileged read is
+// the thing this replaces, so it refuses rather than answering anonymously.
+func (m *MemStore) ResolveTicketPartition(_ context.Context, actorType, actorID, ticketID, reason string) (string, error) {
+	if actorType == "" || actorID == "" || reason == "" {
+		return "", ErrActorRequired
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.tickets[ticketID]
+	if !ok {
+		return "", ErrNotFound
+	}
+	m.events = append(m.events, &TicketEvent{
+		ID:        m.newID(),
+		TicketID:  ticketID,
+		EventType: EventCrossPartitionResolve,
+		ActorType: actorType,
+		ActorID:   actorID,
+		NewValue:  t.Partition,
+		Metadata:  reason,
+		CreatedAt: m.now(),
+	})
+	return t.Partition, nil
 }
 
 func (m *MemStore) GetTicketStats(_ context.Context, partition, userID string) (*TicketStats, error) {
@@ -249,7 +312,7 @@ func (m *MemStore) AddMessage(_ context.Context, msg *TicketMessage) error {
 }
 
 func (m *MemStore) listMessages(partition, ticketID string, includeInternal bool, since *time.Time) []*TicketMessage {
-	if partition != "" && !m.partitionOwnsTicket(partition, ticketID) {
+	if !m.partitionOwnsTicket(partition, ticketID) {
 		return nil
 	}
 	var out []*TicketMessage
@@ -315,7 +378,7 @@ func (m *MemStore) AddTicketEvent(_ context.Context, e *TicketEvent) error {
 func (m *MemStore) ListTicketEvents(_ context.Context, partition, ticketID string) ([]*TicketEvent, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if partition != "" && !m.partitionOwnsTicket(partition, ticketID) {
+	if !m.partitionOwnsTicket(partition, ticketID) {
 		return nil, nil
 	}
 	var out []*TicketEvent
@@ -348,7 +411,7 @@ func (m *MemStore) AddAttachment(_ context.Context, a *Attachment) error {
 func (m *MemStore) ListAttachments(_ context.Context, partition, ticketID string) ([]*Attachment, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if partition != "" && !m.partitionOwnsTicket(partition, ticketID) {
+	if !m.partitionOwnsTicket(partition, ticketID) {
 		return nil, nil
 	}
 	var out []*Attachment

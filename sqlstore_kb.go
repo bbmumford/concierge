@@ -9,16 +9,59 @@ import (
 
 // ── Messages ──
 
-// partitionOwnsTicket reports whether an partition-scoped caller may read a ticket's children. An empty partition
-// is the admin view and always passes; otherwise the ticket must exist under that partition.
+// partitionOwnsTicket reports whether a caller may read a ticket's children: the
+// ticket must exist under the partition the caller named. listMessages,
+// ListTicketEvents and ListAttachments each gate on it and return the ticket's
+// contents once it passes.
+//
+// An empty partition names no partition, so it owns nothing. A caller that does
+// not know a ticket's partition asks ResolveTicketPartition for it, which records
+// the request; reaching every partition by leaving a field unset would let any
+// caller acquire that reach by forgetting to fill it in.
 func (s *SQLStore) partitionOwnsTicket(ctx context.Context, partition, ticketID string) (bool, error) {
 	if partition == "" {
-		return true, nil
+		return false, nil
 	}
 	var n int
 	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM concierge_tickets WHERE id = ? AND partition = ?`,
 		ticketID, partition).Scan(&n)
 	return n > 0, err
+}
+
+// ResolveTicketPartition returns the partition a ticket lives under, for a caller
+// entitled to look across partitions, and writes a ticket event naming who asked
+// and why before it answers. It is the only read here that is not confined to one
+// partition; every other read takes the partition it returns and is scoped by it,
+// so the reach is spent once and recorded once rather than riding along with a
+// blank field.
+//
+// actorType, actorID and reason are all required: an unattributed privileged read
+// is the condition this method exists to remove, so it refuses rather than
+// answering anonymously. Returns ErrNotFound for a ticket that does not exist.
+func (s *SQLStore) ResolveTicketPartition(ctx context.Context, actorType, actorID, ticketID, reason string) (string, error) {
+	if actorType == "" || actorID == "" || reason == "" {
+		return "", ErrActorRequired
+	}
+	var partition string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT partition FROM concierge_tickets WHERE id = ?`, ticketID).Scan(&partition)
+	if err == sql.ErrNoRows {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", err
+	}
+	if err := s.AddTicketEvent(ctx, &TicketEvent{
+		TicketID:  ticketID,
+		EventType: EventCrossPartitionResolve,
+		ActorType: actorType,
+		ActorID:   actorID,
+		NewValue:  partition,
+		Metadata:  reason,
+	}); err != nil {
+		return "", err
+	}
+	return partition, nil
 }
 
 const messageCols = `id, ticket_id, author_type, author_id, author_name, author_email, content,
@@ -238,7 +281,7 @@ func (s *SQLStore) CreateCategory(ctx context.Context, c *KBCategory) error {
 
 func (s *SQLStore) GetCategoryBySlug(ctx context.Context, partition, slug string) (*KBCategory, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT `+categoryCols+` FROM concierge_kb_categories
-		WHERE slug = ? AND (? = '' OR partition = ?) LIMIT 1`, slug, partition, partition)
+		WHERE slug = ? AND (? <> '' AND partition = ?) LIMIT 1`, slug, partition, partition)
 	c, err := scanCategory(row)
 	if err == sql.ErrNoRows {
 		return nil, ErrNotFound
@@ -248,7 +291,7 @@ func (s *SQLStore) GetCategoryBySlug(ctx context.Context, partition, slug string
 
 func (s *SQLStore) ListCategories(ctx context.Context, partition string) ([]*KBCategory, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+categoryCols+` FROM concierge_kb_categories
-		WHERE (? = '' OR partition = ?) ORDER BY sort_order ASC`, partition, partition)
+		WHERE (? <> '' AND partition = ?) ORDER BY sort_order ASC`, partition, partition)
 	if err != nil {
 		return nil, err
 	}
@@ -300,7 +343,7 @@ func (s *SQLStore) CreateArticle(ctx context.Context, a *KBArticle) error {
 
 func (s *SQLStore) GetArticleBySlug(ctx context.Context, partition, categorySlug, articleSlug string) (*KBArticle, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT `+articleCols+` FROM concierge_kb_articles
-		WHERE slug = ? AND (? = '' OR partition = ?) AND (? = '' OR category_slug = ?) LIMIT 1`,
+		WHERE slug = ? AND (? <> '' AND partition = ?) AND (? = '' OR category_slug = ?) LIMIT 1`,
 		articleSlug, partition, partition, categorySlug, categorySlug)
 	a, err := scanArticle(row)
 	if err == sql.ErrNoRows {
@@ -328,7 +371,7 @@ func (s *SQLStore) queryArticles(ctx context.Context, where string, args ...any)
 }
 
 func (s *SQLStore) ListArticles(ctx context.Context, partition, categorySlug string) ([]*KBArticle, error) {
-	return s.queryArticles(ctx, `(? = '' OR partition = ?) AND (? = '' OR category_slug = ?)`,
+	return s.queryArticles(ctx, `(? <> '' AND partition = ?) AND (? = '' OR category_slug = ?)`,
 		partition, partition, categorySlug, categorySlug)
 }
 
@@ -337,7 +380,7 @@ func (s *SQLStore) SearchArticles(ctx context.Context, partition, query string) 
 	// contract identical to the MemStore reference without a full-text index dependency.
 	like := "%" + strings.ToLower(query) + "%"
 	return s.queryArticles(ctx,
-		`(? = '' OR partition = ?) AND (lower(title) LIKE ? OR lower(content) LIKE ?)`,
+		`(? <> '' AND partition = ?) AND (lower(title) LIKE ? OR lower(content) LIKE ?)`,
 		partition, partition, like, like)
 }
 

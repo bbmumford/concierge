@@ -9,11 +9,28 @@ import (
 // ErrNotFound is returned by single-record reads when the record does not exist.
 var ErrNotFound = errors.New("concierge: not found")
 
+// ErrActorRequired is returned by ResolveTicketPartition when the caller supplies
+// no actor type, no actor id, or no reason. That read crosses partitions, and the
+// event it writes is the only record that it happened, so an anonymous one would
+// produce reach with nothing to attribute it to.
+var ErrActorRequired = errors.New("concierge: cross-partition read requires actor type, actor id and reason")
+
+// EventCrossPartitionResolve is the ticket-event type ResolveTicketPartition
+// writes before returning a partition. It is the audit trail for every read that
+// was not confined to one partition; ListTicketEvents surfaces it to that
+// ticket's own partition, so the partition sees who looked.
+const EventCrossPartitionResolve = "cross_partition_resolve"
+
 // Store is the persistence contract for the help-desk: tickets, their message threads, the audit
 // event log, attachments, and the knowledge base. A consumer supplies a *sql.DB store (the shipped
 // default), a mesh-RPC gateway, or the reference MemStore. Every field is a neutral concierge type and
-// the Partition is opaque — the store partitions on it, never interprets it. An empty partition ("") on an
-// partition-scoped read means "any partition" (the admin/all-scope view). Times are time.Time.
+// the Partition is opaque — the store partitions on it, never interprets it. Times are time.Time.
+//
+// An empty partition on a partition-scoped read matches nothing. A caller that
+// needs to reach a ticket whose partition it does not know calls
+// ResolveTicketPartition, which records who asked and why, and then reads with
+// the partition that returns — so cross-partition reach is a thing a caller asks
+// for and leaves a trace of, never a consequence of leaving a field blank.
 type Store interface {
 	// ── Tickets ──
 	CreateTicket(ctx context.Context, t *Ticket) error
@@ -35,6 +52,12 @@ type Store interface {
 	// SetExternalRef links (or clears, with an empty value) an external channel ref on a ticket.
 	SetExternalRef(ctx context.Context, ticketID, refKey, refValue string) error
 	GetTicketStats(ctx context.Context, partition, userID string) (*TicketStats, error)
+	// ResolveTicketPartition names the partition a ticket lives under, for a caller
+	// entitled to reach across partitions, and records the request as a ticket event
+	// before answering. Every other read is confined to the partition it is given,
+	// so this is where that confinement is lifted — deliberately, attributably, once.
+	// All of actorType, actorID and reason are required.
+	ResolveTicketPartition(ctx context.Context, actorType, actorID, ticketID, reason string) (string, error)
 
 	// ── Messages ──
 	AddMessage(ctx context.Context, m *TicketMessage) error

@@ -45,9 +45,12 @@ func TestTicket_CreateGetPartitionScopeAndExternalRef(t *testing.T) {
 		if _, err := s.GetTicket(ctx, "globex", tk.ID); !errors.Is(err, ErrNotFound) {
 			t.Fatal("a different partition must not see the ticket")
 		}
-		// empty partition = admin view
-		if _, err := s.GetTicket(ctx, "", tk.ID); err != nil {
-			t.Fatal("empty partition (admin) must resolve")
+		// An empty partition names no partition, so it reaches nothing — the same
+		// answer a wrong partition gets. Asserting both against the one that works
+		// keeps the three outcomes distinct: a matching partition returns the
+		// ticket, and neither of the others can be mistaken for it.
+		if _, err := s.GetTicket(ctx, "", tk.ID); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("an empty partition must reach nothing, got err=%v", err)
 		}
 		// external-ref link + lookup (channel-agnostic)
 		if err := s.SetExternalRef(ctx, tk.ID, "discord.channel", "chan-99"); err != nil {
@@ -204,6 +207,74 @@ func TestKB_SearchAndCategoryScope(t *testing.T) {
 		a2, _ := s.GetArticleBySlug(ctx, "acme", "billing", "refunds")
 		if a2.ViewCount != 1 {
 			t.Fatalf("view count must increment; got %d", a2.ViewCount)
+		}
+	})
+}
+
+// TestResolveTicketPartition_IsTheOnlyWayAcrossPartitions pins the replacement for
+// an empty partition meaning "see everything": reach across partitions exists, but
+// only through a call that says who is asking and leaves an event behind.
+//
+// It asserts the two legs produce DIFFERENT outcomes rather than each returning
+// what its own case expects. A test that only checks "the call I expected to work
+// worked" cannot tell a real filter from one that admits everyone, which is how an
+// empty partition passed for an admin in the first place.
+func TestResolveTicketPartition_IsTheOnlyWayAcrossPartitions(t *testing.T) {
+	eachStore(t, func(t *testing.T, s Store) {
+		tk := &Ticket{Partition: "acme", UserID: "u1", Email: "a@x", Subject: "help", Status: "open"}
+		if err := s.CreateTicket(ctx, tk); err != nil {
+			t.Fatalf("CreateTicket: %v", err)
+		}
+		if err := s.AddMessage(ctx, &TicketMessage{TicketID: tk.ID, AuthorType: "user", Content: "hello"}); err != nil {
+			t.Fatalf("AddMessage: %v", err)
+		}
+
+		// A caller that names no partition reads no messages.
+		blind, err := s.ListMessages(ctx, "", tk.ID, true)
+		if err != nil || len(blind) != 0 {
+			t.Fatalf("an empty partition must read no messages, got %d err=%v", len(blind), err)
+		}
+
+		// Unattributed reach is refused, so the event below is never missing.
+		for _, missing := range []struct{ actorType, actorID, reason string }{
+			{"", "admin-1", "escalation"},
+			{"staff", "", "escalation"},
+			{"staff", "admin-1", ""},
+		} {
+			if _, err := s.ResolveTicketPartition(ctx, missing.actorType, missing.actorID, tk.ID, missing.reason); !errors.Is(err, ErrActorRequired) {
+				t.Fatalf("resolve(%q,%q,%q) must refuse, got %v", missing.actorType, missing.actorID, missing.reason, err)
+			}
+		}
+
+		// Attributed, it answers — and that answer is what makes the scoped read work.
+		partition, err := s.ResolveTicketPartition(ctx, "staff", "admin-1", tk.ID, "escalation")
+		if err != nil || partition != "acme" {
+			t.Fatalf("resolve: partition=%q err=%v", partition, err)
+		}
+		seeing, err := s.ListMessages(ctx, partition, tk.ID, true)
+		if err != nil || len(seeing) != 1 {
+			t.Fatalf("the resolved partition must read the messages, got %d err=%v", len(seeing), err)
+		}
+		if len(blind) == len(seeing) {
+			t.Fatal("naming no partition and naming the right one produced the same result; the filter admits everyone")
+		}
+
+		// The ticket's own partition can see that someone crossed into it.
+		events, err := s.ListTicketEvents(ctx, "acme", tk.ID)
+		if err != nil {
+			t.Fatalf("ListTicketEvents: %v", err)
+		}
+		var found *TicketEvent
+		for _, e := range events {
+			if e.EventType == EventCrossPartitionResolve {
+				found = e
+			}
+		}
+		if found == nil {
+			t.Fatal("a cross-partition resolve left no event; the reach would be unattributable")
+		}
+		if found.ActorID != "admin-1" || found.Metadata != "escalation" {
+			t.Fatalf("event must carry who and why, got actor=%q reason=%q", found.ActorID, found.Metadata)
 		}
 	})
 }

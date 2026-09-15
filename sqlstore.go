@@ -10,10 +10,11 @@ import (
 // SQLStore is the durable default Store over any database/sql driver — the shipped standalone store.
 // The package imports only database/sql (stdlib); the APP supplies the opened *sql.DB and registers
 // the driver (go-libsql/Turso, modernc, Postgres), so concierge pulls no driver dependency yet works
-// out of the box. Partition is an opaque column the store filters on but never interprets; an empty partition
-// ("") on an partition-scoped read matches any partition (the admin view). Times are stored as INTEGER Unix
-// nanoseconds; a NULL means "not yet" for a *time.Time field. The Store interface remains the
-// escape-hatch for a mesh-gateway or the in-memory MemStore.
+// out of the box. Partition is an opaque column the store filters on but never interprets; an empty
+// partition on a partition-scoped read matches nothing, and a caller that needs a ticket whose
+// partition it does not know goes through ResolveTicketPartition, which records the request. Times are
+// stored as INTEGER Unix nanoseconds; a NULL means "not yet" for a *time.Time field. The Store
+// interface remains the escape-hatch for a mesh-gateway or the in-memory MemStore.
 type SQLStore struct{ db *sql.DB }
 
 // NewSQLStore builds a store over an opened *sql.DB. Call InitSchema once before use.
@@ -212,7 +213,7 @@ func (s *SQLStore) CreateTicket(ctx context.Context, t *Ticket) error {
 
 func (s *SQLStore) GetTicket(ctx context.Context, partition, id string) (*Ticket, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT `+ticketCols+` FROM concierge_tickets
-		WHERE id = ? AND (? = '' OR partition = ?)`, id, partition, partition)
+		WHERE id = ? AND (? <> '' AND partition = ?)`, id, partition, partition)
 	t, err := scanTicket(row)
 	if err == sql.ErrNoRows {
 		return nil, ErrNotFound
@@ -254,16 +255,16 @@ func (s *SQLStore) queryTickets(ctx context.Context, where string, args ...any) 
 }
 
 func (s *SQLStore) ListTicketsByUser(ctx context.Context, partition, userID, statusFilter string) ([]*Ticket, error) {
-	return s.queryTickets(ctx, `(? = '' OR partition = ?) AND user_id = ? AND (? = '' OR status = ?)`,
+	return s.queryTickets(ctx, `(? <> '' AND partition = ?) AND user_id = ? AND (? = '' OR status = ?)`,
 		partition, partition, userID, statusFilter, statusFilter)
 }
 
 func (s *SQLStore) ListTicketsByEmail(ctx context.Context, partition, email string) ([]*Ticket, error) {
-	return s.queryTickets(ctx, `(? = '' OR partition = ?) AND lower(email) = lower(?)`, partition, partition, email)
+	return s.queryTickets(ctx, `(? <> '' AND partition = ?) AND lower(email) = lower(?)`, partition, partition, email)
 }
 
 func (s *SQLStore) ListTicketsByGroup(ctx context.Context, partition, groupID, statusFilter string) ([]*Ticket, error) {
-	return s.queryTickets(ctx, `(? = '' OR partition = ?) AND group_id = ? AND (? = '' OR status = ?)`,
+	return s.queryTickets(ctx, `(? <> '' AND partition = ?) AND group_id = ? AND (? = '' OR status = ?)`,
 		partition, partition, groupID, statusFilter, statusFilter)
 }
 
@@ -314,7 +315,30 @@ func (s *SQLStore) ListBreachedTickets(ctx context.Context, firstResponse, resol
 func (s *SQLStore) touchTicket(ctx context.Context, partition, id, setClause string, args ...any) error {
 	full := append(args, time.Now().UnixNano(), id, partition, partition)
 	res, err := s.db.ExecContext(ctx, `UPDATE concierge_tickets SET `+setClause+`, updated_at = ?
-		WHERE id = ? AND (? = '' OR partition = ?)`, full...)
+		WHERE id = ? AND (? <> '' AND partition = ?)`, full...)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// touchTicketUnscoped updates a ticket without a partition predicate. Only the two
+// Store methods that take no partition use it — SetFirstResponseAt, stamping an SLA
+// clock, and SetExternalRef, linking a channel ref the ticket's partition did not
+// supply. Each acts on a ticket the caller already has an id for rather than
+// searching, so neither widens what a caller can reach.
+//
+// It is separate from touchTicket because that one's predicate now requires a
+// non-empty partition: passing "" through it would restore an unset partition
+// meaning every partition, which is the property being removed. MemStore's
+// mutateTicketUnscoped is the same split, so the two stores stay comparable.
+func (s *SQLStore) touchTicketUnscoped(ctx context.Context, id, setClause string, args ...any) error {
+	full := append(args, time.Now().UnixNano(), id)
+	res, err := s.db.ExecContext(ctx, `UPDATE concierge_tickets SET `+setClause+`, updated_at = ?
+		WHERE id = ?`, full...)
 	if err != nil {
 		return err
 	}
@@ -344,7 +368,7 @@ func (s *SQLStore) UpdateTicketPriority(ctx context.Context, partition, id, prio
 }
 
 func (s *SQLStore) SetFirstResponseAt(ctx context.Context, id string, at time.Time) error {
-	return s.touchTicket(ctx, "", id, `first_response_at = COALESCE(first_response_at, ?)`, at.UnixNano())
+	return s.touchTicketUnscoped(ctx, id, `first_response_at = COALESCE(first_response_at, ?)`, at.UnixNano())
 }
 
 func (s *SQLStore) SetExternalRef(ctx context.Context, ticketID, refKey, refValue string) error {
@@ -359,14 +383,14 @@ func (s *SQLStore) SetExternalRef(ctx context.Context, ticketID, refKey, refValu
 		set = `external_refs = json_set(external_refs, '$.' || ?, ?)`
 	}
 	if refValue == "" {
-		return s.touchTicket(ctx, "", ticketID, set, arg)
+		return s.touchTicketUnscoped(ctx, ticketID, set, arg)
 	}
-	return s.touchTicket(ctx, "", ticketID, set, refKey, refValue)
+	return s.touchTicketUnscoped(ctx, ticketID, set, refKey, refValue)
 }
 
 func (s *SQLStore) GetTicketStats(ctx context.Context, partition, userID string) (*TicketStats, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT status, COUNT(*) FROM concierge_tickets
-		WHERE (? = '' OR partition = ?) AND (? = '' OR user_id = ?) GROUP BY status`,
+		WHERE (? <> '' AND partition = ?) AND (? = '' OR user_id = ?) GROUP BY status`,
 		partition, partition, userID, userID)
 	if err != nil {
 		return nil, err
