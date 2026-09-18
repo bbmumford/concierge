@@ -268,7 +268,13 @@ func (s *SQLStore) ListTicketsByGroup(ctx context.Context, partition, groupID, s
 		partition, partition, groupID, statusFilter, statusFilter)
 }
 
-func (s *SQLStore) ListAllTickets(ctx context.Context, statusFilter, categoryFilter string, limit, offset int) ([]*Ticket, int, error) {
+func (s *SQLStore) ListAllTickets(ctx context.Context, actorType, actorID, reason, statusFilter, categoryFilter string, limit, offset int) ([]*Ticket, int, error) {
+	if actorType == "" || actorID == "" || reason == "" {
+		return nil, 0, ErrActorRequired
+	}
+	if limit <= 0 {
+		return nil, 0, ErrUnboundedAdminList
+	}
 	where := `(? = '' OR status = ?) AND (? = '' OR category = ?)`
 	args := []any{statusFilter, statusFilter, categoryFilter, categoryFilter}
 	var total int
@@ -276,14 +282,9 @@ func (s *SQLStore) ListAllTickets(ctx context.Context, statusFilter, categoryFil
 		Scan(&total); err != nil {
 		return nil, 0, err
 	}
-	q := `SELECT ` + ticketCols + ` FROM concierge_tickets WHERE ` + where + ` ORDER BY created_at DESC`
-	if limit > 0 {
-		q += ` LIMIT ? OFFSET ?`
-		args = append(args, limit, offset)
-	} else if offset > 0 {
-		q += ` LIMIT -1 OFFSET ?`
-		args = append(args, offset)
-	}
+	q := `SELECT ` + ticketCols + ` FROM concierge_tickets WHERE ` + where +
+		` ORDER BY created_at DESC LIMIT ? OFFSET ?`
+	args = append(args, limit, offset)
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, 0, err
@@ -297,7 +298,24 @@ func (s *SQLStore) ListAllTickets(ctx context.Context, statusFilter, categoryFil
 		}
 		out = append(out, t)
 	}
-	return out, total, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	// Written before the page is returned, and one per ticket, so a partition's own
+	// event log names every cross-partition read that reached one of its tickets.
+	for _, t := range out {
+		if err := s.AddTicketEvent(ctx, &TicketEvent{
+			TicketID:  t.ID,
+			EventType: EventCrossPartitionList,
+			ActorType: actorType,
+			ActorID:   actorID,
+			NewValue:  t.Partition,
+			Metadata:  reason,
+		}); err != nil {
+			return nil, 0, err
+		}
+	}
+	return out, total, nil
 }
 
 func (s *SQLStore) ListBreachedTickets(ctx context.Context, firstResponse, resolution time.Duration, now time.Time) ([]*Ticket, error) {

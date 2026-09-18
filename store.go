@@ -9,10 +9,11 @@ import (
 // ErrNotFound is returned by single-record reads when the record does not exist.
 var ErrNotFound = errors.New("concierge: not found")
 
-// ErrActorRequired is returned by ResolveTicketPartition when the caller supplies
-// no actor type, no actor id, or no reason. That read crosses partitions, and the
-// event it writes is the only record that it happened, so an anonymous one would
-// produce reach with nothing to attribute it to.
+// ErrActorRequired is returned by the cross-partition reads — ResolveTicketPartition
+// and ListAllTickets — when the caller supplies no actor type, no actor id, or no
+// reason. Those reads cross partitions, and the events they write are the only
+// record that they happened, so an anonymous one would produce reach with nothing
+// to attribute it to.
 var ErrActorRequired = errors.New("concierge: cross-partition read requires actor type, actor id and reason")
 
 // EventCrossPartitionResolve is the ticket-event type ResolveTicketPartition
@@ -21,6 +22,19 @@ var ErrActorRequired = errors.New("concierge: cross-partition read requires acto
 // ticket's own partition, so the partition sees who looked.
 const EventCrossPartitionResolve = "cross_partition_resolve"
 
+// EventCrossPartitionList is the ticket-event type ListAllTickets writes, one per
+// ticket in the page it returns, before returning it. Keying it to each disclosed
+// ticket rather than to the call means ListTicketEvents shows a partition every
+// cross-partition read that actually reached one of its tickets — a partition can
+// see that it was read without being able to see the rest of the page.
+const EventCrossPartitionList = "cross_partition_list"
+
+// ErrUnboundedAdminList is returned by ListAllTickets for a non-positive limit.
+// The audit is one event per disclosed ticket, so an unbounded page is an
+// unbounded write; requiring a limit keeps the record proportional to the read and
+// makes the caller name how much it is taking.
+var ErrUnboundedAdminList = errors.New("concierge: cross-partition list requires a positive limit")
+
 // Store is the persistence contract for the help-desk: tickets, their message threads, the audit
 // event log, attachments, and the knowledge base. A consumer supplies a *sql.DB store (the shipped
 // default), a mesh-RPC gateway, or the reference MemStore. Every field is a neutral concierge type and
@@ -28,9 +42,10 @@ const EventCrossPartitionResolve = "cross_partition_resolve"
 //
 // An empty partition on a partition-scoped read matches nothing. A caller that
 // needs to reach a ticket whose partition it does not know calls
-// ResolveTicketPartition, which records who asked and why, and then reads with
-// the partition that returns — so cross-partition reach is a thing a caller asks
-// for and leaves a trace of, never a consequence of leaving a field blank.
+// ResolveTicketPartition, and one that needs the view across partitions calls
+// ListAllTickets; both record who asked and why — so cross-partition reach is a
+// thing a caller asks for and leaves a trace of, never a consequence of leaving a
+// field blank.
 type Store interface {
 	// ── Tickets ──
 	CreateTicket(ctx context.Context, t *Ticket) error
@@ -41,9 +56,13 @@ type Store interface {
 	ListTicketsByUser(ctx context.Context, partition, userID, statusFilter string) ([]*Ticket, error)
 	ListTicketsByEmail(ctx context.Context, partition, email string) ([]*Ticket, error)
 	ListTicketsByGroup(ctx context.Context, partition, groupID, statusFilter string) ([]*Ticket, error)
-	// ListAllTickets is the admin view across partitions, with optional status/category filters + paging;
-	// returns the page and the total matching count.
-	ListAllTickets(ctx context.Context, statusFilter, categoryFilter string, limit, offset int) (page []*Ticket, total int, err error)
+	// ListAllTickets is the admin view across partitions, with optional status/category
+	// filters + paging; returns the page and the total matching count. It is the second
+	// read here that is not confined to one partition, and it carries the same terms as
+	// ResolveTicketPartition: actorType, actorID and reason are all required, and it
+	// writes an EventCrossPartitionList on every ticket it returns before returning it.
+	// limit must be positive — see ErrUnboundedAdminList.
+	ListAllTickets(ctx context.Context, actorType, actorID, reason, statusFilter, categoryFilter string, limit, offset int) (page []*Ticket, total int, err error)
 	// ListBreachedTickets returns tickets past a first-response or resolution threshold (SLA breach).
 	ListBreachedTickets(ctx context.Context, firstResponse, resolution time.Duration, now time.Time) ([]*Ticket, error)
 	UpdateTicketStatus(ctx context.Context, partition, id, status string) error

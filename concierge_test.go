@@ -124,9 +124,49 @@ func TestTicket_StatsAndPaging(t *testing.T) {
 			t.Fatalf("stats partition-scoped mismatch: %+v", stats)
 		}
 		// admin paging across partitions with a status filter + total count
-		page, total, _ := s.ListAllTickets(ctx, "open", "", 2, 0)
+		page, total, err := s.ListAllTickets(ctx, "staff", "adm1", "audit sweep", "open", "", 2, 0)
+		if err != nil {
+			t.Fatalf("ListAllTickets: %v", err)
+		}
 		if total != 3 || len(page) != 2 {
 			t.Fatalf("ListAllTickets(open, limit 2): page=%d total=%d", len(page), total)
+		}
+
+		// The read crosses partitions, so it refuses without an actor and a reason,
+		// and refuses an unbounded page — the audit is one event per disclosed
+		// ticket, so an unbounded read is an unbounded write.
+		for _, bad := range []struct {
+			name                    string
+			actorType, actorID, why string
+			limit                   int
+			want                    error
+		}{
+			{"no actor type", "", "adm1", "r", 2, ErrActorRequired},
+			{"no actor id", "staff", "", "r", 2, ErrActorRequired},
+			{"no reason", "staff", "adm1", "", 2, ErrActorRequired},
+			{"unbounded", "staff", "adm1", "r", 0, ErrUnboundedAdminList},
+			{"negative limit", "staff", "adm1", "r", -1, ErrUnboundedAdminList},
+		} {
+			if _, _, err := s.ListAllTickets(ctx, bad.actorType, bad.actorID, bad.why, "", "", bad.limit, 0); !errors.Is(err, bad.want) {
+				t.Errorf("ListAllTickets(%s): err = %v, want %v", bad.name, err, bad.want)
+			}
+		}
+
+		// Every disclosed ticket carries the read in its OWN partition's event log.
+		for _, tk := range page {
+			evs, err := s.ListTicketEvents(ctx, tk.Partition, tk.ID)
+			if err != nil {
+				t.Fatalf("ListTicketEvents(%s): %v", tk.ID, err)
+			}
+			var found bool
+			for _, e := range evs {
+				if e.EventType == EventCrossPartitionList && e.ActorID == "adm1" && e.Metadata == "audit sweep" {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("ticket %s was disclosed across partitions with no %s event", tk.ID, EventCrossPartitionList)
+			}
 		}
 	})
 }

@@ -133,19 +133,43 @@ func (m *MemStore) ListTicketsByGroup(_ context.Context, partition, groupID, sta
 	}), nil
 }
 
-func (m *MemStore) ListAllTickets(_ context.Context, statusFilter, categoryFilter string, limit, offset int) ([]*Ticket, int, error) {
+func (m *MemStore) ListAllTickets(ctx context.Context, actorType, actorID, reason, statusFilter, categoryFilter string, limit, offset int) ([]*Ticket, int, error) {
+	if actorType == "" || actorID == "" || reason == "" {
+		return nil, 0, ErrActorRequired
+	}
+	if limit <= 0 {
+		return nil, 0, ErrUnboundedAdminList
+	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	all := m.filterTickets(func(t *Ticket) bool {
 		return statusMatch(statusFilter, t.Status) && (categoryFilter == "" || t.Category == categoryFilter)
 	})
 	total := len(all)
 	if offset >= total {
+		m.mu.Unlock()
 		return nil, total, nil
 	}
 	all = all[offset:]
-	if limit > 0 && len(all) > limit {
+	if len(all) > limit {
 		all = all[:limit]
+	}
+	m.mu.Unlock()
+
+	// Written before the page is returned, and one per ticket, so a partition's own
+	// event log names every cross-partition read that reached one of its tickets.
+	// AddTicketEvent takes the lock itself, which is why the page is assembled above
+	// and the lock released first.
+	for _, t := range all {
+		if err := m.AddTicketEvent(ctx, &TicketEvent{
+			TicketID:  t.ID,
+			EventType: EventCrossPartitionList,
+			ActorType: actorType,
+			ActorID:   actorID,
+			NewValue:  t.Partition,
+			Metadata:  reason,
+		}); err != nil {
+			return nil, 0, err
+		}
 	}
 	return all, total, nil
 }
