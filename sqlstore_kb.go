@@ -426,11 +426,13 @@ func (s *SQLStore) UpsertArticle(ctx context.Context, a *KBArticle) error {
 
 // GetArticleBySlug, ListArticles and SearchArticles each carry
 // status = 'published' (ArticleStatusPublished): they are the public reads the
-// Store contract describes.
+// Store contract describes. GetArticleBySlug orders by category_slug before
+// LIMIT 1 because an empty categorySlug can match one article per category,
+// and an unordered LIMIT 1 answers whichever row the engine reads first.
 func (s *SQLStore) GetArticleBySlug(ctx context.Context, partition, categorySlug, articleSlug string) (*KBArticle, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT `+articleCols+` FROM concierge_kb_articles
 		WHERE slug = ? AND (? <> '' AND partition = ?) AND (? = '' OR category_slug = ?)
-			AND status = 'published' LIMIT 1`,
+			AND status = 'published' ORDER BY category_slug LIMIT 1`,
 		articleSlug, partition, partition, categorySlug, categorySlug)
 	a, err := scanArticle(row)
 	if err == sql.ErrNoRows {

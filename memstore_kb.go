@@ -168,13 +168,22 @@ func publicArticle(partition string, a *KBArticle) bool {
 func (m *MemStore) GetArticleBySlug(_ context.Context, partition, categorySlug, articleSlug string) (*KBArticle, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// The first category slug answers, as SQLStore's ORDER BY category_slug
+	// does; ranging over the map alone would answer a different category on
+	// different calls.
+	var found *KBArticle
 	for _, a := range m.articles {
 		if publicArticle(partition, a) && a.Slug == articleSlug && (categorySlug == "" || a.CategorySlug == categorySlug) {
-			cp := *a
-			return &cp, nil
+			if found == nil || a.CategorySlug < found.CategorySlug {
+				found = a
+			}
 		}
 	}
-	return nil, ErrNotFound
+	if found == nil {
+		return nil, ErrNotFound
+	}
+	cp := *found
+	return &cp, nil
 }
 
 func (m *MemStore) ListArticles(_ context.Context, partition, categorySlug string) ([]*KBArticle, error) {

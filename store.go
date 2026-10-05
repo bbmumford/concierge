@@ -136,6 +136,11 @@ type Store interface {
 	// answers only articles whose Status is ArticleStatusPublished. A draft's slug
 	// is a miss (ErrNotFound) and a draft is absent from every listing and search
 	// result.
+	//
+	// GetArticleBySlug with an empty categorySlug matches the slug in any
+	// category. The key holds one article per category under a slug, so where
+	// several categories publish it, the one whose category slug sorts first
+	// answers, on every call and on both stores.
 	GetArticleBySlug(ctx context.Context, partition, categorySlug, articleSlug string) (*KBArticle, error)
 	ListArticles(ctx context.Context, partition, categorySlug string) ([]*KBArticle, error)
 	SearchArticles(ctx context.Context, partition, query string) ([]*KBArticle, error)

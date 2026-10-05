@@ -189,6 +189,38 @@ func TestKB_UpsertsAreIdempotent(t *testing.T) {
 	})
 }
 
+// TestKB_AnArticleSlugWithoutItsCategoryAnswersOneArticle pins GetArticleBySlug
+// with an empty category slug. The article key includes the category, so one
+// slug can be published once in each category; the read answers the published
+// one whose category slug sorts first, on both stores and on every call. The
+// draft in the first category is skipped, because the public reads see
+// published articles only.
+func TestKB_AnArticleSlugWithoutItsCategoryAnswersOneArticle(t *testing.T) {
+	eachStore(t, func(t *testing.T, s Store) {
+		for _, a := range []*KBArticle{
+			{Partition: "acme", CategorySlug: "billing", Slug: "refunds", Title: "Billing refunds", Status: ArticleStatusPublished},
+			{Partition: "acme", CategorySlug: "zebra", Slug: "refunds", Title: "Zebra refunds", Status: ArticleStatusPublished},
+			{Partition: "acme", CategorySlug: "account", Slug: "refunds", Title: "Account refunds", Status: ArticleStatusPublished},
+			{Partition: "acme", CategorySlug: "aardvark", Slug: "refunds", Title: "Aardvark refunds", Status: "draft"},
+		} {
+			if err := s.CreateArticle(ctx, a); err != nil {
+				t.Fatalf("CreateArticle(%s/%s): %v", a.CategorySlug, a.Slug, err)
+			}
+		}
+		seen := map[string]int{}
+		for i := 0; i < 64; i++ {
+			got, err := s.GetArticleBySlug(ctx, "acme", "", "refunds")
+			if err != nil {
+				t.Fatalf("GetArticleBySlug with no category: %v", err)
+			}
+			seen[got.CategorySlug]++
+		}
+		if len(seen) != 1 || seen["account"] != 64 {
+			t.Errorf("an article slug read without its category must answer the published article whose category sorts first, every time; got %v", seen)
+		}
+	})
+}
+
 // TestInitSchemaMakesSlugsUniqueOverAnExistingTable runs InitSchema over KB
 // tables that already exist without the slug indexes. A host runs InitSchema at
 // every boot over the same database file, and CREATE TABLE IF NOT EXISTS leaves
