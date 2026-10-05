@@ -118,9 +118,10 @@ func TestKB_SlugsAreUniqueWithinTheirScope(t *testing.T) {
 	})
 }
 
-// TestKB_UpsertsAreIdempotent pins the seeder's write: repeating it leaves one
-// row per key, carrying the newest content, under the identity the first write
-// gave it, with the counters readers accumulated in between intact.
+// TestKB_UpsertsAreIdempotent pins an upsert repeated over a store that already
+// holds its rows: repeating it leaves one row per key, carrying the newest
+// content, under the identity the first write gave it, with the view count
+// IncrementArticleViewCount added in between intact.
 func TestKB_UpsertsAreIdempotent(t *testing.T) {
 	eachStore(t, func(t *testing.T, s Store) {
 		first := &KBCategory{Partition: "acme", Name: "Billing", Slug: "billing", SortOrder: 1}

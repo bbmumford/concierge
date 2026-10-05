@@ -125,9 +125,9 @@ type Store interface {
 	// when the partition holds no such slug and otherwise replaces the stored row's
 	// name, description, parent, sort order and article count, keeping its id and
 	// creation time. Either way c.ID and c.CreatedAt are set to the stored row's,
-	// so repeating the call leaves one row carrying the latest content. It is the
-	// write a boot seeder repeats on every start over a database that may already
-	// hold the corpus.
+	// so repeating the call leaves one row carrying the latest content: a writer
+	// that repeats the same writes at every start, over a database that may
+	// already hold their rows, leaves one row per key.
 	UpsertCategory(ctx context.Context, c *KBCategory) error
 	GetCategoryBySlug(ctx context.Context, partition, slug string) (*KBCategory, error)
 	ListCategories(ctx context.Context, partition string) ([]*KBCategory, error)
@@ -135,10 +135,11 @@ type Store interface {
 	// UpsertArticle writes a under its (Partition, CategorySlug, Slug), the same
 	// way UpsertCategory writes a category. It replaces the authored fields (title,
 	// content, category, author, status, metadata) and keeps the stored id,
-	// creation time, view count and helpful count: the counts are what readers
-	// accumulate between seeder runs (IncrementArticleViewCount adds to the view
-	// count), not authored content, so a reseed leaves them. a.ID, a.CreatedAt,
-	// a.ViewCount and a.HelpfulCount are set to the stored row's.
+	// creation time, view count and helpful count. The two counts are not
+	// authored content: IncrementArticleViewCount adds to the view count between
+	// writes, and the helpful count is written only when the row is inserted, so
+	// a repeated upsert resets neither. a.ID, a.CreatedAt, a.ViewCount and
+	// a.HelpfulCount are set to the stored row's.
 	UpsertArticle(ctx context.Context, a *KBArticle) error
 	// GetArticleBySlug, ListArticles and SearchArticles are the public reads: a
 	// help centre serves them to visitors who present no principal, so each
