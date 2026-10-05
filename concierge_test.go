@@ -228,8 +228,8 @@ func TestAttachments_PartitionGuard(t *testing.T) {
 func TestKB_SearchAndCategoryScope(t *testing.T) {
 	eachStore(t, func(t *testing.T, s Store) {
 		s.CreateCategory(ctx, &KBCategory{Partition: "acme", Name: "Billing", Slug: "billing"})
-		s.CreateArticle(ctx, &KBArticle{Partition: "acme", Title: "Refund policy", Slug: "refunds", Content: "how to get a refund", CategorySlug: "billing"})
-		s.CreateArticle(ctx, &KBArticle{Partition: "acme", Title: "Login help", Slug: "login", Content: "reset password", CategorySlug: "account"})
+		s.CreateArticle(ctx, &KBArticle{Partition: "acme", Title: "Refund policy", Slug: "refunds", Content: "how to get a refund", CategorySlug: "billing", Status: ArticleStatusPublished})
+		s.CreateArticle(ctx, &KBArticle{Partition: "acme", Title: "Login help", Slug: "login", Content: "reset password", CategorySlug: "account", Status: ArticleStatusPublished})
 		if got, _ := s.SearchArticles(ctx, "acme", "refund"); len(got) != 1 || got[0].Slug != "refunds" {
 			t.Fatalf("search must match title/content; got %+v", got)
 		}

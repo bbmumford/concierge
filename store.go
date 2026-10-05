@@ -35,6 +35,20 @@ const EventCrossPartitionList = "cross_partition_list"
 // makes the caller name how much it is taking.
 var ErrUnboundedAdminList = errors.New("concierge: cross-partition list requires a positive limit")
 
+// ErrDuplicateSlug is returned by CreateCategory when the partition already holds
+// a category with that slug, and by CreateArticle when the partition already holds
+// an article with that slug in that category. Both stores answer it, so a caller
+// written against MemStore sees the same refusal from SQLStore, where the unique
+// indexes InitSchema builds are what refuse the row. A caller that means "insert
+// or replace" calls UpsertCategory or UpsertArticle instead.
+var ErrDuplicateSlug = errors.New("concierge: slug already taken")
+
+// ArticleStatusPublished is the KBArticle.Status value the public reads serve.
+// ListArticles, SearchArticles and GetArticleBySlug answer only articles carrying
+// it; an article under any other status (a draft, an archived article) is stored
+// and absent from all three.
+const ArticleStatusPublished = "published"
+
 // Store is the persistence contract for the help-desk: tickets, their message threads, the audit
 // event log, attachments, and the knowledge base. A consumer supplies a *sql.DB store (the shipped
 // default), a mesh-RPC gateway, or the reference MemStore. Every field is a neutral concierge type and
@@ -93,10 +107,35 @@ type Store interface {
 	ListAttachments(ctx context.Context, partition, ticketID string) ([]*Attachment, error)
 
 	// ── Knowledge base ──
+	//
+	// A category's slug is unique within its partition, and an article's slug is
+	// unique within its partition and category. CreateCategory and CreateArticle
+	// refuse a taken slug with ErrDuplicateSlug.
 	CreateCategory(ctx context.Context, c *KBCategory) error
+	// UpsertCategory writes c under its (Partition, Slug): it inserts the category
+	// when the partition holds no such slug and otherwise replaces the stored row's
+	// name, description, parent, sort order and article count, keeping its id and
+	// creation time. Either way c.ID and c.CreatedAt are set to the stored row's,
+	// so repeating the call leaves one row carrying the latest content. It is the
+	// write a boot seeder repeats on every start over a database that may already
+	// hold the corpus.
+	UpsertCategory(ctx context.Context, c *KBCategory) error
 	GetCategoryBySlug(ctx context.Context, partition, slug string) (*KBCategory, error)
 	ListCategories(ctx context.Context, partition string) ([]*KBCategory, error)
 	CreateArticle(ctx context.Context, a *KBArticle) error
+	// UpsertArticle writes a under its (Partition, CategorySlug, Slug), the same
+	// way UpsertCategory writes a category. It replaces the authored fields (title,
+	// content, category, author, status, metadata) and keeps the stored id,
+	// creation time, view count and helpful count: the counts are what readers
+	// accumulate between seeder runs (IncrementArticleViewCount adds to the view
+	// count), not authored content, so a reseed leaves them. a.ID, a.CreatedAt,
+	// a.ViewCount and a.HelpfulCount are set to the stored row's.
+	UpsertArticle(ctx context.Context, a *KBArticle) error
+	// GetArticleBySlug, ListArticles and SearchArticles are the public reads: a
+	// help centre serves them to visitors who present no principal, so each
+	// answers only articles whose Status is ArticleStatusPublished. A draft's slug
+	// is a miss (ErrNotFound) and a draft is absent from every listing and search
+	// result.
 	GetArticleBySlug(ctx context.Context, partition, categorySlug, articleSlug string) (*KBArticle, error)
 	ListArticles(ctx context.Context, partition, categorySlug string) ([]*KBArticle, error)
 	SearchArticles(ctx context.Context, partition, query string) ([]*KBArticle, error)

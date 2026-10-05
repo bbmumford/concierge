@@ -82,6 +82,14 @@ func (s *SQLStore) InitSchema(ctx context.Context) error {
 			created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_concierge_kb_articles_partition ON concierge_kb_articles(partition)`,
+		// The slug keys CreateCategory and CreateArticle refuse a duplicate of and
+		// UpsertCategory and UpsertArticle name as their ON CONFLICT target. They
+		// are indexes rather than table constraints because a host runs InitSchema
+		// at every boot over the same database file, and CREATE TABLE IF NOT EXISTS
+		// leaves a table that already exists as it is; CREATE UNIQUE INDEX IF NOT
+		// EXISTS reaches such a table as well as a fresh one.
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_concierge_kb_categories_slug ON concierge_kb_categories(partition, slug)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_concierge_kb_articles_slug ON concierge_kb_articles(partition, category_slug, slug)`,
 	}
 	for _, q := range stmts {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
