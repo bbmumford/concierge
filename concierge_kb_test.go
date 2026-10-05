@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"testing"
+	"time"
 )
 
 // TestKB_PublicReadsServePublishedArticlesOnly pins what a visitor who presents
@@ -185,6 +186,78 @@ func TestKB_UpsertsAreIdempotent(t *testing.T) {
 		}
 		if all, _ := s.ListArticles(ctx, "acme", ""); len(all) != 2 {
 			t.Errorf("acme holds refunds under two categories; got %v", slugs(all))
+		}
+	})
+}
+
+// TestKB_UpsertsReplaceEveryAuthoredFieldAndKeepTheCounts pins each field the
+// Store contract names for the two upserts. A replacing upsert takes every
+// authored field from the caller, and keeps the stored id, creation time, view
+// count and helpful count; the caller's struct reports what was stored. Each
+// field is set on the first write and changed on the second, so a statement or
+// a copy that dropped any one of them leaves the first value behind.
+func TestKB_UpsertsReplaceEveryAuthoredFieldAndKeepTheCounts(t *testing.T) {
+	eachStore(t, func(t *testing.T, s Store) {
+		first := &KBCategory{Partition: "acme", Slug: "billing", Name: "Billing", Description: "first description",
+			ParentID: "parent-1", SortOrder: 1, ArticleCount: 3}
+		if err := s.UpsertCategory(ctx, first); err != nil {
+			t.Fatalf("UpsertCategory (insert): %v", err)
+		}
+		second := &KBCategory{Partition: "acme", Slug: "billing", Name: "Billing and payments",
+			Description: "second description", ParentID: "parent-2", SortOrder: 2, ArticleCount: 4}
+		if err := s.UpsertCategory(ctx, second); err != nil {
+			t.Fatalf("UpsertCategory (replace): %v", err)
+		}
+		want := KBCategory{ID: first.ID, Partition: "acme", Slug: "billing", Name: "Billing and payments",
+			Description: "second description", ParentID: "parent-2", SortOrder: 2, ArticleCount: 4}
+		stored, err := s.GetCategoryBySlug(ctx, "acme", "billing")
+		if err != nil {
+			t.Fatalf("GetCategoryBySlug: %v", err)
+		}
+		for name, got := range map[string]KBCategory{"stored row": *stored, "caller's struct": *second} {
+			if !got.CreatedAt.Equal(first.CreatedAt) {
+				t.Errorf("%s: created %v, want the first write's %v", name, got.CreatedAt, first.CreatedAt)
+			}
+			got.CreatedAt, got.UpdatedAt = time.Time{}, time.Time{}
+			if got != want {
+				t.Errorf("%s after a replacing UpsertCategory:\n got %+v\nwant %+v", name, got, want)
+			}
+		}
+
+		draft := &KBArticle{Partition: "acme", CategorySlug: "billing", Slug: "refunds", Title: "Refunds",
+			Content: "first text", ContentHTML: "<p>first text</p>", CategoryID: "category-1",
+			CategoryName: "Billing", AuthorID: "author-1", AuthorName: "First Author", Status: "draft",
+			Metadata: `{"rev":1}`, HelpfulCount: 5}
+		if err := s.UpsertArticle(ctx, draft); err != nil {
+			t.Fatalf("UpsertArticle (insert): %v", err)
+		}
+		if err := s.IncrementArticleViewCount(ctx, draft.ID); err != nil {
+			t.Fatalf("IncrementArticleViewCount: %v", err)
+		}
+		live := &KBArticle{Partition: "acme", CategorySlug: "billing", Slug: "refunds", Title: "Refund policy",
+			Content: "second text", ContentHTML: "<p>second text</p>", CategoryID: "category-2",
+			CategoryName: "Billing and payments", AuthorID: "author-2", AuthorName: "Second Author",
+			Status: ArticleStatusPublished, Metadata: `{"rev":2}`, HelpfulCount: 9, ViewCount: 7}
+		if err := s.UpsertArticle(ctx, live); err != nil {
+			t.Fatalf("UpsertArticle (replace): %v", err)
+		}
+		wantArticle := KBArticle{ID: draft.ID, Partition: "acme", CategorySlug: "billing", Slug: "refunds",
+			Title: "Refund policy", Content: "second text", ContentHTML: "<p>second text</p>",
+			CategoryID: "category-2", CategoryName: "Billing and payments", AuthorID: "author-2",
+			AuthorName: "Second Author", Status: ArticleStatusPublished, Metadata: `{"rev":2}`,
+			ViewCount: 1, HelpfulCount: 5}
+		read, err := s.GetArticleBySlug(ctx, "acme", "billing", "refunds")
+		if err != nil {
+			t.Fatalf("GetArticleBySlug: %v", err)
+		}
+		for name, got := range map[string]KBArticle{"stored row": *read, "caller's struct": *live} {
+			if !got.CreatedAt.Equal(draft.CreatedAt) {
+				t.Errorf("%s: created %v, want the first write's %v", name, got.CreatedAt, draft.CreatedAt)
+			}
+			got.CreatedAt, got.UpdatedAt = time.Time{}, time.Time{}
+			if got != wantArticle {
+				t.Errorf("%s after a replacing UpsertArticle:\n got %+v\nwant %+v", name, got, wantArticle)
+			}
 		}
 	})
 }
