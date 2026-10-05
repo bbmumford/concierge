@@ -39,6 +39,9 @@ func (m *MemStore) CreateCategory(_ context.Context, c *KBCategory) error {
 	if m.categoryAt(c.Partition, c.Slug) != nil {
 		return ErrDuplicateSlug
 	}
+	if _, held := m.categories[c.ID]; c.ID != "" && held {
+		return ErrDuplicateID
+	}
 	if c.ID == "" {
 		c.ID = m.newID()
 	}
@@ -56,7 +59,6 @@ func (m *MemStore) UpsertCategory(_ context.Context, c *KBCategory) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := m.now()
-	c.UpdatedAt = now
 	if stored := m.categoryAt(c.Partition, c.Slug); stored != nil {
 		stored.Name = c.Name
 		stored.Description = c.Description
@@ -66,8 +68,13 @@ func (m *MemStore) UpsertCategory(_ context.Context, c *KBCategory) error {
 		stored.UpdatedAt = now
 		c.ID = stored.ID
 		c.CreatedAt = stored.CreatedAt
+		c.UpdatedAt = now
 		return nil
 	}
+	if _, held := m.categories[c.ID]; c.ID != "" && held {
+		return ErrDuplicateID
+	}
+	c.UpdatedAt = now
 	if c.ID == "" {
 		c.ID = m.newID()
 	}
@@ -111,6 +118,9 @@ func (m *MemStore) CreateArticle(_ context.Context, a *KBArticle) error {
 	if m.articleAt(a.Partition, a.CategorySlug, a.Slug) != nil {
 		return ErrDuplicateSlug
 	}
+	if _, held := m.articles[a.ID]; a.ID != "" && held {
+		return ErrDuplicateID
+	}
 	if a.ID == "" {
 		a.ID = m.newID()
 	}
@@ -128,7 +138,6 @@ func (m *MemStore) UpsertArticle(_ context.Context, a *KBArticle) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := m.now()
-	a.UpdatedAt = now
 	if stored := m.articleAt(a.Partition, a.CategorySlug, a.Slug); stored != nil {
 		stored.Title = a.Title
 		stored.Content = a.Content
@@ -142,10 +151,15 @@ func (m *MemStore) UpsertArticle(_ context.Context, a *KBArticle) error {
 		stored.UpdatedAt = now
 		a.ID = stored.ID
 		a.CreatedAt = stored.CreatedAt
+		a.UpdatedAt = now
 		a.ViewCount = stored.ViewCount
 		a.HelpfulCount = stored.HelpfulCount
 		return nil
 	}
+	if _, held := m.articles[a.ID]; a.ID != "" && held {
+		return ErrDuplicateID
+	}
+	a.UpdatedAt = now
 	if a.ID == "" {
 		a.ID = m.newID()
 	}

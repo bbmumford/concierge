@@ -294,6 +294,84 @@ func TestKB_AnArticleSlugWithoutItsCategoryAnswersOneArticle(t *testing.T) {
 	})
 }
 
+// TestKB_ACallerSuppliedIDAnotherRowHoldsIsRefused pins the four KB writes when
+// the caller names an id that a row under another key already holds. SQLStore's
+// primary key refuses such a row, so MemStore refuses it too, and both answer
+// ErrDuplicateID rather than one replacing the other row and the other
+// returning its driver's constraint text. The row holding the id is unchanged.
+func TestKB_ACallerSuppliedIDAnotherRowHoldsIsRefused(t *testing.T) {
+	eachStore(t, func(t *testing.T, s Store) {
+		billing := &KBCategory{Partition: "acme", Slug: "billing", Name: "Billing"}
+		if err := s.CreateCategory(ctx, billing); err != nil {
+			t.Fatalf("CreateCategory: %v", err)
+		}
+		refunds := &KBArticle{Partition: "acme", CategorySlug: "billing", Slug: "refunds", Title: "Refunds",
+			Status: ArticleStatusPublished}
+		if err := s.CreateArticle(ctx, refunds); err != nil {
+			t.Fatalf("CreateArticle: %v", err)
+		}
+		if err := s.CreateCategory(ctx, &KBCategory{ID: billing.ID, Partition: "acme", Slug: "account", Name: "Account"}); !errors.Is(err, ErrDuplicateID) {
+			t.Errorf("CreateCategory naming a held id: want ErrDuplicateID, got %v", err)
+		}
+		if err := s.UpsertCategory(ctx, &KBCategory{ID: billing.ID, Partition: "acme", Slug: "account", Name: "Account"}); !errors.Is(err, ErrDuplicateID) {
+			t.Errorf("UpsertCategory inserting under a held id: want ErrDuplicateID, got %v", err)
+		}
+		if err := s.CreateArticle(ctx, &KBArticle{ID: refunds.ID, Partition: "acme", CategorySlug: "billing", Slug: "invoices",
+			Title: "Invoices", Status: ArticleStatusPublished}); !errors.Is(err, ErrDuplicateID) {
+			t.Errorf("CreateArticle naming a held id: want ErrDuplicateID, got %v", err)
+		}
+		if err := s.UpsertArticle(ctx, &KBArticle{ID: refunds.ID, Partition: "acme", CategorySlug: "billing", Slug: "invoices",
+			Title: "Invoices", Status: ArticleStatusPublished}); !errors.Is(err, ErrDuplicateID) {
+			t.Errorf("UpsertArticle inserting under a held id: want ErrDuplicateID, got %v", err)
+		}
+		// A refused write leaves the caller's struct as it was given, so a caller
+		// holding either store never reads an id that names no stored row.
+		taken := &KBCategory{Partition: "acme", Slug: "billing", Name: "Billing again"}
+		if err := s.CreateCategory(ctx, taken); !errors.Is(err, ErrDuplicateSlug) || taken.ID != "" || !taken.CreatedAt.IsZero() || !taken.UpdatedAt.IsZero() {
+			t.Errorf("a create refused for its slug must leave the struct as given; got %+v err=%v", taken, err)
+		}
+		takenArticle := &KBArticle{Partition: "acme", CategorySlug: "billing", Slug: "refunds", Title: "Refunds again"}
+		if err := s.CreateArticle(ctx, takenArticle); !errors.Is(err, ErrDuplicateSlug) || takenArticle.ID != "" || !takenArticle.CreatedAt.IsZero() || !takenArticle.UpdatedAt.IsZero() {
+			t.Errorf("an article create refused for its slug must leave the struct as given; got %+v err=%v", takenArticle, err)
+		}
+		heldUpsert := &KBArticle{ID: refunds.ID, Partition: "acme", CategorySlug: "billing", Slug: "credits", Title: "Credits"}
+		if err := s.UpsertArticle(ctx, heldUpsert); !errors.Is(err, ErrDuplicateID) || heldUpsert.ID != refunds.ID || !heldUpsert.CreatedAt.IsZero() || !heldUpsert.UpdatedAt.IsZero() {
+			t.Errorf("an upsert refused for its id must leave the struct as given; got %+v err=%v", heldUpsert, err)
+		}
+		if got, err := s.GetCategoryBySlug(ctx, "acme", "billing"); err != nil || got.ID != billing.ID || got.Name != "Billing" {
+			t.Errorf("the category holding the id must be unchanged; got %+v err=%v", got, err)
+		}
+		if _, err := s.GetCategoryBySlug(ctx, "acme", "account"); !errors.Is(err, ErrNotFound) {
+			t.Errorf("a refused category must not be stored; got err=%v", err)
+		}
+		if got, err := s.ListArticles(ctx, "acme", "billing"); err != nil || len(got) != 1 || got[0].ID != refunds.ID || got[0].Slug != "refunds" {
+			t.Errorf("the article holding the id must be the only one, unchanged; got %v err=%v", slugs(got), err)
+		}
+		// Where the key is taken as well, the slug answers first on both stores:
+		// a create is refused for its slug, and a replacing upsert keeps the
+		// stored row's id whatever the caller names, as the contract says.
+		other := &KBArticle{Partition: "acme", CategorySlug: "account", Slug: "refunds", Title: "Account refunds",
+			Status: ArticleStatusPublished}
+		if err := s.CreateArticle(ctx, other); err != nil {
+			t.Fatalf("CreateArticle(account/refunds): %v", err)
+		}
+		for _, id := range []string{refunds.ID, other.ID} {
+			if err := s.CreateArticle(ctx, &KBArticle{ID: id, Partition: "acme", CategorySlug: "billing", Slug: "refunds",
+				Title: "Refunds again", Status: ArticleStatusPublished}); !errors.Is(err, ErrDuplicateSlug) {
+				t.Errorf("CreateArticle on a taken key naming id %q: want ErrDuplicateSlug, got %v", id, err)
+			}
+		}
+		replacing := &KBArticle{ID: other.ID, Partition: "acme", CategorySlug: "billing", Slug: "refunds",
+			Title: "Refund policy", Status: ArticleStatusPublished}
+		if err := s.UpsertArticle(ctx, replacing); err != nil || replacing.ID != refunds.ID {
+			t.Errorf("a replacing upsert keeps the stored id; got id %q err=%v, want %q", replacing.ID, err, refunds.ID)
+		}
+		if got, err := s.GetArticleBySlug(ctx, "acme", "account", "refunds"); err != nil || got.ID != other.ID || got.Title != "Account refunds" {
+			t.Errorf("the row whose id the replacing upsert named must be unchanged; got %+v err=%v", got, err)
+		}
+	})
+}
+
 // TestInitSchemaMakesSlugsUniqueOverAnExistingTable runs InitSchema over KB
 // tables that already exist without the slug indexes. A host runs InitSchema at
 // every boot over the same database file, and CREATE TABLE IF NOT EXISTS leaves

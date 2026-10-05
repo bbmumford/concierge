@@ -25,6 +25,7 @@ func scanCategory(sc interface{ Scan(...any) error }) (*KBCategory, error) {
 }
 
 func (s *SQLStore) CreateCategory(ctx context.Context, c *KBCategory) error {
+	given := *c
 	if c.ID == "" {
 		c.ID = randomID()
 	}
@@ -37,10 +38,30 @@ func (s *SQLStore) CreateCategory(ctx context.Context, c *KBCategory) error {
 		VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(partition, slug) DO NOTHING`,
 		c.ID, c.Partition, c.Name, c.Slug, c.Description, c.ParentID, c.SortOrder, c.ArticleCount,
 		tnanos(c.CreatedAt), tnanos(c.UpdatedAt))
-	if err != nil {
-		return err
+	if err == nil {
+		err = refuseUnwritten(res)
+	} else {
+		err = s.idConflict(ctx, "concierge_kb_categories", c.ID, err)
 	}
-	return refuseUnwritten(res)
+	if err != nil {
+		*c = given
+	}
+	return err
+}
+
+// idConflict answers ErrDuplicateID for an INSERT into table the driver refused
+// while another row holds id, and err unchanged otherwise. The four KB writes
+// name their slug key in ON CONFLICT, and the engine resolves that key ahead of
+// the primary key (TestKB_ACallerSuppliedIDAnotherRowHoldsIsRefused's taken-key
+// cases), so a refusal reaching here with id held is a primary-key conflict,
+// and the caller sees the sentinel MemStore returns rather than the driver's
+// constraint text. table is one of this file's two KB table names.
+func (s *SQLStore) idConflict(ctx context.Context, table, id string, err error) error {
+	var one int
+	if s.db.QueryRowContext(ctx, `SELECT 1 FROM `+table+` WHERE id = ?`, id).Scan(&one) == nil {
+		return ErrDuplicateID
+	}
+	return err
 }
 
 // refuseUnwritten turns an INSERT that ON CONFLICT ... DO NOTHING skipped into
@@ -58,6 +79,7 @@ func refuseUnwritten(res sql.Result) error {
 }
 
 func (s *SQLStore) UpsertCategory(ctx context.Context, c *KBCategory) error {
+	given := *c
 	if c.ID == "" {
 		c.ID = randomID()
 	}
@@ -74,6 +96,8 @@ func (s *SQLStore) UpsertCategory(ctx context.Context, c *KBCategory) error {
 			updated_at = excluded.updated_at`,
 		c.ID, c.Partition, c.Name, c.Slug, c.Description, c.ParentID, c.SortOrder, c.ArticleCount,
 		tnanos(c.CreatedAt), tnanos(c.UpdatedAt)); err != nil {
+		err = s.idConflict(ctx, "concierge_kb_categories", c.ID, err)
+		*c = given
 		return err
 	}
 	// The read-back names the row by the exact key the statement above wrote, so
@@ -81,6 +105,7 @@ func (s *SQLStore) UpsertCategory(ctx context.Context, c *KBCategory) error {
 	var created int64
 	if err := s.db.QueryRowContext(ctx, `SELECT id, created_at FROM concierge_kb_categories
 		WHERE partition = ? AND slug = ?`, c.Partition, c.Slug).Scan(&c.ID, &created); err != nil {
+		*c = given
 		return err
 	}
 	c.CreatedAt = fromNanos(created)
@@ -133,6 +158,7 @@ func scanArticle(sc interface{ Scan(...any) error }) (*KBArticle, error) {
 }
 
 func (s *SQLStore) CreateArticle(ctx context.Context, a *KBArticle) error {
+	given := *a
 	if a.ID == "" {
 		a.ID = randomID()
 	}
@@ -146,13 +172,19 @@ func (s *SQLStore) CreateArticle(ctx context.Context, a *KBArticle) error {
 		a.ID, a.Partition, a.Title, a.Slug, a.Content, a.ContentHTML, a.CategoryID, a.CategoryName,
 		a.CategorySlug, a.AuthorID, a.AuthorName, a.Status, a.ViewCount, a.HelpfulCount, a.Metadata,
 		tnanos(a.CreatedAt), tnanos(a.UpdatedAt))
-	if err != nil {
-		return err
+	if err == nil {
+		err = refuseUnwritten(res)
+	} else {
+		err = s.idConflict(ctx, "concierge_kb_articles", a.ID, err)
 	}
-	return refuseUnwritten(res)
+	if err != nil {
+		*a = given
+	}
+	return err
 }
 
 func (s *SQLStore) UpsertArticle(ctx context.Context, a *KBArticle) error {
+	given := *a
 	if a.ID == "" {
 		a.ID = randomID()
 	}
@@ -171,6 +203,8 @@ func (s *SQLStore) UpsertArticle(ctx context.Context, a *KBArticle) error {
 		a.ID, a.Partition, a.Title, a.Slug, a.Content, a.ContentHTML, a.CategoryID, a.CategoryName,
 		a.CategorySlug, a.AuthorID, a.AuthorName, a.Status, a.ViewCount, a.HelpfulCount, a.Metadata,
 		tnanos(a.CreatedAt), tnanos(a.UpdatedAt)); err != nil {
+		err = s.idConflict(ctx, "concierge_kb_articles", a.ID, err)
+		*a = given
 		return err
 	}
 	// The read-back names the row by the exact key the statement above wrote, as
@@ -179,6 +213,7 @@ func (s *SQLStore) UpsertArticle(ctx context.Context, a *KBArticle) error {
 	if err := s.db.QueryRowContext(ctx, `SELECT id, created_at, view_count, helpful_count
 		FROM concierge_kb_articles WHERE partition = ? AND category_slug = ? AND slug = ?`,
 		a.Partition, a.CategorySlug, a.Slug).Scan(&a.ID, &created, &a.ViewCount, &a.HelpfulCount); err != nil {
+		*a = given
 		return err
 	}
 	a.CreatedAt = fromNanos(created)

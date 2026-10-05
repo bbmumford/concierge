@@ -43,6 +43,15 @@ var ErrUnboundedAdminList = errors.New("concierge: cross-partition list requires
 // or replace" calls UpsertCategory or UpsertArticle instead.
 var ErrDuplicateSlug = errors.New("concierge: slug already taken")
 
+// ErrDuplicateID is returned by CreateCategory and CreateArticle, and by
+// UpsertCategory and UpsertArticle where they insert, when the caller names an
+// id that a row under another key already holds. SQLStore's primary key refuses
+// such a row and MemStore refuses it the same way, so neither store replaces a
+// row the caller did not address by its key. A key that is taken as well is
+// answered first, as ErrDuplicateSlug from a create and as a replace from an
+// upsert, on both stores. A refused write leaves the caller's struct as given.
+var ErrDuplicateID = errors.New("concierge: id already taken")
+
 // ArticleStatusPublished is the KBArticle.Status value the public reads serve.
 // ListArticles, SearchArticles and GetArticleBySlug answer only articles carrying
 // it; an article under any other status (a draft, an archived article) is stored
