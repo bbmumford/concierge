@@ -86,8 +86,10 @@ func (s *SQLStore) InitSchema(ctx context.Context) error {
 		// UpsertCategory and UpsertArticle name as their ON CONFLICT target. They
 		// are indexes rather than table constraints because a host runs InitSchema
 		// at every boot over the same database file, and CREATE TABLE IF NOT EXISTS
-		// leaves a table that already exists as it is; CREATE UNIQUE INDEX IF NOT
-		// EXISTS reaches such a table as well as a fresh one.
+		// leaves a table that already exists as it is. CREATE UNIQUE INDEX IF NOT
+		// EXISTS reaches a fresh table and an existing one that holds no two rows
+		// under one key; over a table that does, the index is not built and
+		// InitSchema returns the engine's constraint error.
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_concierge_kb_categories_slug ON concierge_kb_categories(partition, slug)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_concierge_kb_articles_slug ON concierge_kb_articles(partition, category_slug, slug)`,
 	}

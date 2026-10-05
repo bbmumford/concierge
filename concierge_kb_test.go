@@ -426,6 +426,36 @@ func TestInitSchemaMakesSlugsUniqueOverAnExistingTable(t *testing.T) {
 	}
 }
 
+// TestInitSchemaRefusesAnExistingTableHoldingADuplicateKey pins the condition
+// the slug indexes are built under: over a KB table that already holds two rows
+// under one key, the unique index cannot be built, and InitSchema returns that
+// error rather than starting a store whose upserts would have no ON CONFLICT
+// target.
+func TestInitSchemaRefusesAnExistingTableHoldingADuplicateKey(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.SetMaxOpenConns(1)
+	t.Cleanup(func() { db.Close() })
+	s := NewSQLStore(db)
+	if err := s.InitSchema(ctx); err != nil {
+		t.Fatalf("InitSchema: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `DROP INDEX idx_concierge_kb_articles_slug`); err != nil {
+		t.Fatal(err)
+	}
+	dup := `INSERT INTO concierge_kb_articles (id, partition, category_slug, slug) VALUES (?, 'acme', 'billing', 'refunds')`
+	for _, id := range []string{"row-1", "row-2"} {
+		if _, err := db.ExecContext(ctx, dup, id); err != nil {
+			t.Fatalf("seed %s: %v", id, err)
+		}
+	}
+	if err := s.InitSchema(ctx); err == nil {
+		t.Error("InitSchema over a table holding a duplicate key must return the index build's error")
+	}
+}
+
 func slugs(as []*KBArticle) []string {
 	out := make([]string, 0, len(as))
 	for _, a := range as {
