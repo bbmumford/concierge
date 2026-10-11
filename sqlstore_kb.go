@@ -41,7 +41,7 @@ func (s *SQLStore) CreateCategory(ctx context.Context, c *KBCategory) error {
 	if err == nil {
 		err = refuseUnwritten(res)
 	} else {
-		err = s.idConflict(ctx, "concierge_kb_categories", c.ID, err)
+		err = s.idConflict(ctx, "concierge_kb_categories", c.ID, categoryKey, []any{c.Partition, c.Slug}, err)
 	}
 	if err != nil {
 		*c = given
@@ -49,19 +49,36 @@ func (s *SQLStore) CreateCategory(ctx context.Context, c *KBCategory) error {
 	return err
 }
 
-// idConflict answers ErrDuplicateID for an INSERT into table the driver refused
-// while another row holds id, and err unchanged otherwise. The four KB writes
-// name their slug key in ON CONFLICT, and the engine resolves that key ahead of
-// the primary key (TestKB_ACallerSuppliedIDAnotherRowHoldsIsRefused's taken-key
-// cases), so a refusal reaching here with id held is a primary-key conflict,
-// and the caller sees the sentinel MemStore returns rather than the driver's
-// constraint text. table is one of this file's two KB table names.
-func (s *SQLStore) idConflict(ctx context.Context, table, id string, err error) error {
+// categoryKey and articleKey are the unique slug keys InitSchema indexes, as
+// WHERE predicates over the columns the KB writes name in ON CONFLICT. idConflict
+// reads them to learn whether a refused write had a row to resolve against.
+const (
+	categoryKey = `partition = ? AND slug = ?`
+	articleKey  = `partition = ? AND category_slug = ? AND slug = ?`
+)
+
+// idConflict answers ErrDuplicateID for a KB write the engine refused where the
+// primary key is what refuses it, and err unchanged otherwise. The four KB
+// writes name their slug key in ON CONFLICT, and the engine resolves that key
+// ahead of the primary key (TestKB_ACallerSuppliedIDAnotherRowHoldsIsRefused's
+// taken-key cases): where a row holds the key the caller wrote under, the write
+// resolves against that row and the id the caller named cannot conflict, so the
+// primary key refuses only an insert under a free key naming an id a row holds.
+// Any other refusal, such as a read-only database refusing an upsert of a row
+// read back under its own id, returns the engine's error. Where the primary key
+// does refuse, the caller sees the sentinel MemStore returns for the same write
+// rather than the driver's constraint text, even when the engine names another
+// reason first, because that write cannot land while those rows stand. table is
+// one of this file's two KB table names, and key with keyArgs is its slug key.
+func (s *SQLStore) idConflict(ctx context.Context, table, id, key string, keyArgs []any, err error) error {
 	var one int
-	if s.db.QueryRowContext(ctx, `SELECT 1 FROM `+table+` WHERE id = ?`, id).Scan(&one) == nil {
-		return ErrDuplicateID
+	if s.db.QueryRowContext(ctx, `SELECT 1 FROM `+table+` WHERE id = ?`, id).Scan(&one) != nil {
+		return err
 	}
-	return err
+	if s.db.QueryRowContext(ctx, `SELECT 1 FROM `+table+` WHERE `+key, keyArgs...).Scan(&one) != sql.ErrNoRows {
+		return err
+	}
+	return ErrDuplicateID
 }
 
 // refuseUnwritten turns an INSERT that ON CONFLICT ... DO NOTHING skipped into
@@ -96,7 +113,7 @@ func (s *SQLStore) UpsertCategory(ctx context.Context, c *KBCategory) error {
 			updated_at = excluded.updated_at`,
 		c.ID, c.Partition, c.Name, c.Slug, c.Description, c.ParentID, c.SortOrder, c.ArticleCount,
 		tnanos(c.CreatedAt), tnanos(c.UpdatedAt)); err != nil {
-		err = s.idConflict(ctx, "concierge_kb_categories", c.ID, err)
+		err = s.idConflict(ctx, "concierge_kb_categories", c.ID, categoryKey, []any{c.Partition, c.Slug}, err)
 		*c = given
 		return err
 	}
@@ -175,7 +192,8 @@ func (s *SQLStore) CreateArticle(ctx context.Context, a *KBArticle) error {
 	if err == nil {
 		err = refuseUnwritten(res)
 	} else {
-		err = s.idConflict(ctx, "concierge_kb_articles", a.ID, err)
+		err = s.idConflict(ctx, "concierge_kb_articles", a.ID, articleKey,
+			[]any{a.Partition, a.CategorySlug, a.Slug}, err)
 	}
 	if err != nil {
 		*a = given
@@ -203,7 +221,8 @@ func (s *SQLStore) UpsertArticle(ctx context.Context, a *KBArticle) error {
 		a.ID, a.Partition, a.Title, a.Slug, a.Content, a.ContentHTML, a.CategoryID, a.CategoryName,
 		a.CategorySlug, a.AuthorID, a.AuthorName, a.Status, a.ViewCount, a.HelpfulCount, a.Metadata,
 		tnanos(a.CreatedAt), tnanos(a.UpdatedAt)); err != nil {
-		err = s.idConflict(ctx, "concierge_kb_articles", a.ID, err)
+		err = s.idConflict(ctx, "concierge_kb_articles", a.ID, articleKey,
+			[]any{a.Partition, a.CategorySlug, a.Slug}, err)
 		*a = given
 		return err
 	}
