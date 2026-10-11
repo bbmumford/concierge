@@ -268,13 +268,16 @@ func TestKB_UpsertsReplaceEveryAuthoredFieldAndKeepTheCounts(t *testing.T) {
 // slug can be published once in each category; the read answers the published
 // one whose category slug sorts first, on both stores and on every call. The
 // draft in the first category is skipped, because the public reads see
-// published articles only.
+// published articles only. Among the published three, the one whose category
+// sorts first is neither first nor last by title nor written first or last, so
+// a read ordered by title either way (ListArticles orders by title) or by the
+// order rows were written answers another category.
 func TestKB_AnArticleSlugWithoutItsCategoryAnswersOneArticle(t *testing.T) {
 	eachStore(t, func(t *testing.T, s Store) {
 		for _, a := range []*KBArticle{
-			{Partition: "acme", CategorySlug: "billing", Slug: "refunds", Title: "Billing refunds", Status: ArticleStatusPublished},
+			{Partition: "acme", CategorySlug: "billing", Slug: "refunds", Title: "A refund on a bill", Status: ArticleStatusPublished},
+			{Partition: "acme", CategorySlug: "account", Slug: "refunds", Title: "Refunds to your account", Status: ArticleStatusPublished},
 			{Partition: "acme", CategorySlug: "zebra", Slug: "refunds", Title: "Zebra refunds", Status: ArticleStatusPublished},
-			{Partition: "acme", CategorySlug: "account", Slug: "refunds", Title: "Account refunds", Status: ArticleStatusPublished},
 			{Partition: "acme", CategorySlug: "aardvark", Slug: "refunds", Title: "Aardvark refunds", Status: "draft"},
 		} {
 			if err := s.CreateArticle(ctx, a); err != nil {
