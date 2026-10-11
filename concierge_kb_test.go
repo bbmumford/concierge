@@ -467,3 +467,53 @@ func slugs(as []*KBArticle) []string {
 	}
 	return out
 }
+
+// TestKB_AnIDAnotherPartitionsRowHoldsIsRefused pins the four KB writes when
+// the id a caller names is held by a row of another partition, under a slug key
+// that is free in the caller's partition but taken in the other. The id is one
+// namespace across partitions (SQLStore's primary key), so both stores answer
+// ErrDuplicateID, and the key that decides "free" is the caller's own
+// partition's: reading the slug key without its partition would find the other
+// partition's row and report the write as a key conflict instead. Neither
+// partition's rows change.
+func TestKB_AnIDAnotherPartitionsRowHoldsIsRefused(t *testing.T) {
+	eachStore(t, func(t *testing.T, s Store) {
+		billing := &KBCategory{Partition: "acme", Slug: "billing", Name: "Billing"}
+		if err := s.CreateCategory(ctx, billing); err != nil {
+			t.Fatalf("CreateCategory: %v", err)
+		}
+		refunds := &KBArticle{Partition: "acme", CategorySlug: "billing", Slug: "refunds", Title: "Refunds",
+			Status: ArticleStatusPublished}
+		if err := s.CreateArticle(ctx, refunds); err != nil {
+			t.Fatalf("CreateArticle: %v", err)
+		}
+
+		if err := s.CreateCategory(ctx, &KBCategory{ID: billing.ID, Partition: "globex", Slug: "billing", Name: "Billing"}); !errors.Is(err, ErrDuplicateID) {
+			t.Errorf("CreateCategory in another partition naming a held id: want ErrDuplicateID, got %v", err)
+		}
+		if err := s.UpsertCategory(ctx, &KBCategory{ID: billing.ID, Partition: "globex", Slug: "billing", Name: "Billing"}); !errors.Is(err, ErrDuplicateID) {
+			t.Errorf("UpsertCategory in another partition naming a held id: want ErrDuplicateID, got %v", err)
+		}
+		if err := s.CreateArticle(ctx, &KBArticle{ID: refunds.ID, Partition: "globex", CategorySlug: "billing", Slug: "refunds",
+			Title: "Refunds", Status: ArticleStatusPublished}); !errors.Is(err, ErrDuplicateID) {
+			t.Errorf("CreateArticle in another partition naming a held id: want ErrDuplicateID, got %v", err)
+		}
+		if err := s.UpsertArticle(ctx, &KBArticle{ID: refunds.ID, Partition: "globex", CategorySlug: "billing", Slug: "refunds",
+			Title: "Refunds", Status: ArticleStatusPublished}); !errors.Is(err, ErrDuplicateID) {
+			t.Errorf("UpsertArticle in another partition naming a held id: want ErrDuplicateID, got %v", err)
+		}
+
+		if got, err := s.GetCategoryBySlug(ctx, "acme", "billing"); err != nil || got.ID != billing.ID || got.Name != "Billing" {
+			t.Errorf("the category holding the id must be unchanged; got %+v err=%v", got, err)
+		}
+		if got, err := s.ListArticles(ctx, "acme", "billing"); err != nil || len(got) != 1 || got[0].ID != refunds.ID {
+			t.Errorf("the article holding the id must be the only one in its partition; got %v err=%v", slugs(got), err)
+		}
+		if _, err := s.GetCategoryBySlug(ctx, "globex", "billing"); !errors.Is(err, ErrNotFound) {
+			t.Errorf("a refused category must not be stored in the other partition; got err=%v", err)
+		}
+		if got, err := s.ListArticles(ctx, "globex", "billing"); err != nil || len(got) != 0 {
+			t.Errorf("a refused article must not be stored in the other partition; got %v err=%v", slugs(got), err)
+		}
+	})
+}
