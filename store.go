@@ -43,14 +43,34 @@ var ErrUnboundedAdminList = errors.New("concierge: cross-partition list requires
 // or replace" calls UpsertCategory or UpsertArticle instead.
 var ErrDuplicateSlug = errors.New("concierge: slug already taken")
 
-// ErrDuplicateID is returned by CreateCategory and CreateArticle, and by
-// UpsertCategory and UpsertArticle where they insert, when the caller names an
-// id that a row under another key already holds. SQLStore's primary key refuses
+// ErrDuplicateID is returned by CreateTicket, CreateCategory and CreateArticle,
+// and by UpsertCategory and UpsertArticle where they insert, when the caller names
+// an id that a row under another key already holds; for a ticket the id is the
+// only key, so any ticket holding it refuses the create, whatever its partition. SQLStore's primary key refuses
 // such a row and MemStore refuses it the same way, so neither store replaces a
 // row the caller did not address by its key. A key that is taken as well is
 // answered first, as ErrDuplicateSlug from a create and as a replace from an
 // upsert, on both stores. A refused write leaves the caller's struct as given.
 var ErrDuplicateID = errors.New("concierge: id already taken")
+
+// ticketNumberLen is how many leading characters of a ticket's id make its
+// default number, the short reference a person quotes back to support.
+const ticketNumberLen = 8
+
+// ticketNumber is CreateTicket's default number for id: its first ticketNumberLen
+// characters, or the whole id when it is shorter, cut on a character boundary so
+// a caller-supplied id of any length or alphabet yields a valid string. Both
+// stores call it, so a ticket created through either carries the same number.
+func ticketNumber(id string) string {
+	n := 0
+	for i := range id {
+		if n == ticketNumberLen {
+			return id[:i]
+		}
+		n++
+	}
+	return id
+}
 
 // ArticleStatusPublished is the KBArticle.Status value the public reads serve.
 // ListArticles, SearchArticles and GetArticleBySlug answer only articles carrying

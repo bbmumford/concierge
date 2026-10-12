@@ -57,21 +57,33 @@ func partitionMatch(want, have string) bool { return want != "" && want == have 
 
 // ── Tickets ──
 
+// CreateTicket stores t under its id, minting one when t names none. An id a
+// ticket already holds is refused with ErrDuplicateID, as SQLStore's primary key
+// refuses it, and the refusal changes neither the stored ticket nor t; the id,
+// number and times are written back to t only once the ticket is stored.
 func (m *MemStore) CreateTicket(_ context.Context, t *Ticket) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if t.ID == "" {
-		t.ID = m.newID()
+	id := t.ID
+	if id == "" {
+		id = m.newID()
 	}
-	if t.Number == "" {
-		t.Number = t.ID[:8]
+	if _, taken := m.tickets[id]; taken {
+		return ErrDuplicateID
+	}
+	number := t.Number
+	if number == "" {
+		number = ticketNumber(id)
 	}
 	now := m.now()
-	if t.CreatedAt.IsZero() {
-		t.CreatedAt = now
+	created := t.CreatedAt
+	if created.IsZero() {
+		created = now
 	}
-	t.UpdatedAt = now
-	m.tickets[t.ID] = cloneTicket(t)
+	row := cloneTicket(t)
+	row.ID, row.Number, row.CreatedAt, row.UpdatedAt = id, number, created, now
+	m.tickets[id] = row
+	t.ID, t.Number, t.CreatedAt, t.UpdatedAt = id, number, created, now
 	return nil
 }
 

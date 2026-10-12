@@ -200,25 +200,42 @@ func scanTicket(sc interface{ Scan(...any) error }) (*Ticket, error) {
 	return &t, nil
 }
 
+// CreateTicket inserts t under its id, minting one when t names none. An insert
+// the engine refuses while a ticket holds that id answers ErrDuplicateID, the
+// sentinel MemStore returns for the same write, rather than the driver's
+// constraint text: the id is the table's only key, and reading the row back
+// rather than the error's wording keeps the answer the same under any driver. Any
+// other refusal returns the engine's error. A refused insert changes nothing, and
+// the id, number and times are written back to t only once the row is stored.
 func (s *SQLStore) CreateTicket(ctx context.Context, t *Ticket) error {
-	if t.ID == "" {
-		t.ID = randomID()
+	id := t.ID
+	if id == "" {
+		id = randomID()
 	}
-	if t.Number == "" {
-		t.Number = t.ID[:8]
+	number := t.Number
+	if number == "" {
+		number = ticketNumber(id)
 	}
 	now := time.Now()
-	if t.CreatedAt.IsZero() {
-		t.CreatedAt = now
+	created := t.CreatedAt
+	if created.IsZero() {
+		created = now
 	}
-	t.UpdatedAt = now
 	_, err := s.db.ExecContext(ctx, `INSERT INTO concierge_tickets (`+ticketCols+`)
 		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		t.ID, t.Number, t.Partition, t.UserID, t.Email, t.Subject, t.Category, t.Priority, t.Status,
+		id, number, t.Partition, t.UserID, t.Email, t.Subject, t.Category, t.Priority, t.Status,
 		jsonAnyMap(t.FormData), t.GroupID, t.AppID, jsonStrMap(t.ExternalRefs), t.Source,
-		t.UserAgent, t.IPAddress, tnanos(t.CreatedAt), tnanos(t.UpdatedAt), ptrNanos(t.ConfirmedAt),
+		t.UserAgent, t.IPAddress, tnanos(created), tnanos(now), ptrNanos(t.ConfirmedAt),
 		ptrNanos(t.FirstResponseAt), ptrNanos(t.ResolvedAt), ptrNanos(t.ClosedAt))
-	return err
+	if err != nil {
+		var one int
+		if s.db.QueryRowContext(ctx, `SELECT 1 FROM concierge_tickets WHERE id = ?`, id).Scan(&one) == nil {
+			return ErrDuplicateID
+		}
+		return err
+	}
+	t.ID, t.Number, t.CreatedAt, t.UpdatedAt = id, number, created, now
+	return nil
 }
 
 func (s *SQLStore) GetTicket(ctx context.Context, partition, id string) (*Ticket, error) {
