@@ -34,6 +34,9 @@ func (m *MemStore) articleAt(partition, categorySlug, slug string) *KBArticle {
 }
 
 func (m *MemStore) CreateCategory(_ context.Context, c *KBCategory) error {
+	if c.Partition == "" {
+		return ErrEmptyPartition
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.categoryAt(c.Partition, c.Slug) != nil {
@@ -56,6 +59,9 @@ func (m *MemStore) CreateCategory(_ context.Context, c *KBCategory) error {
 }
 
 func (m *MemStore) UpsertCategory(_ context.Context, c *KBCategory) error {
+	if c.Partition == "" {
+		return ErrEmptyPartition
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := m.now()
@@ -113,6 +119,9 @@ func (m *MemStore) ListCategories(_ context.Context, partition string) ([]*KBCat
 }
 
 func (m *MemStore) CreateArticle(_ context.Context, a *KBArticle) error {
+	if a.Partition == "" {
+		return ErrEmptyPartition
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.articleAt(a.Partition, a.CategorySlug, a.Slug) != nil {
@@ -135,6 +144,9 @@ func (m *MemStore) CreateArticle(_ context.Context, a *KBArticle) error {
 }
 
 func (m *MemStore) UpsertArticle(_ context.Context, a *KBArticle) error {
+	if a.Partition == "" {
+		return ErrEmptyPartition
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := m.now()

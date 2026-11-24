@@ -25,6 +25,9 @@ func scanCategory(sc interface{ Scan(...any) error }) (*KBCategory, error) {
 }
 
 func (s *SQLStore) CreateCategory(ctx context.Context, c *KBCategory) error {
+	if c.Partition == "" {
+		return ErrEmptyPartition
+	}
 	given := *c
 	if c.ID == "" {
 		c.ID = randomID()
@@ -96,6 +99,9 @@ func refuseUnwritten(res sql.Result) error {
 }
 
 func (s *SQLStore) UpsertCategory(ctx context.Context, c *KBCategory) error {
+	if c.Partition == "" {
+		return ErrEmptyPartition
+	}
 	given := *c
 	if c.ID == "" {
 		c.ID = randomID()
@@ -175,6 +181,9 @@ func scanArticle(sc interface{ Scan(...any) error }) (*KBArticle, error) {
 }
 
 func (s *SQLStore) CreateArticle(ctx context.Context, a *KBArticle) error {
+	if a.Partition == "" {
+		return ErrEmptyPartition
+	}
 	given := *a
 	if a.ID == "" {
 		a.ID = randomID()
@@ -202,6 +211,9 @@ func (s *SQLStore) CreateArticle(ctx context.Context, a *KBArticle) error {
 }
 
 func (s *SQLStore) UpsertArticle(ctx context.Context, a *KBArticle) error {
+	if a.Partition == "" {
+		return ErrEmptyPartition
+	}
 	given := *a
 	if a.ID == "" {
 		a.ID = randomID()

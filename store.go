@@ -9,6 +9,12 @@ import (
 // ErrNotFound is returned by single-record reads when the record does not exist.
 var ErrNotFound = errors.New("concierge: not found")
 
+// ErrEmptyPartition refuses a write that would store a ticket, category or
+// article under no partition. Every read confined to a partition answers
+// nothing for the empty one, so such a row could never be read back by its
+// partition; it is refused instead of stored unreachable.
+var ErrEmptyPartition = errors.New("concierge: a ticket, category or article must name its partition")
+
 // ErrActorRequired is returned by the cross-partition reads — ResolveTicketPartition
 // and ListAllTickets — when the caller supplies no actor type, no actor id, or no
 // reason. Those reads cross partitions, and the events they write are the only
@@ -91,6 +97,9 @@ const ArticleStatusPublished = "published"
 // field blank.
 type Store interface {
 	// ── Tickets ──
+	//
+	// CreateTicket, CreateCategory, UpsertCategory, CreateArticle and
+	// UpsertArticle refuse a row with an empty Partition with ErrEmptyPartition.
 	CreateTicket(ctx context.Context, t *Ticket) error
 	GetTicket(ctx context.Context, partition, id string) (*Ticket, error)
 	// GetTicketByExternalRef finds the ticket linked to an external channel thread (refKey chosen by

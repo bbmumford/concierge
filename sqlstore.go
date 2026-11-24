@@ -208,6 +208,9 @@ func scanTicket(sc interface{ Scan(...any) error }) (*Ticket, error) {
 // other refusal returns the engine's error. A refused insert changes nothing, and
 // the id, number and times are written back to t only once the row is stored.
 func (s *SQLStore) CreateTicket(ctx context.Context, t *Ticket) error {
+	if t.Partition == "" {
+		return ErrEmptyPartition
+	}
 	id := t.ID
 	if id == "" {
 		id = randomID()

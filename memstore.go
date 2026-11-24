@@ -62,6 +62,9 @@ func partitionMatch(want, have string) bool { return want != "" && want == have 
 // refuses it, and the refusal changes neither the stored ticket nor t; the id,
 // number and times are written back to t only once the ticket is stored.
 func (m *MemStore) CreateTicket(_ context.Context, t *Ticket) error {
+	if t.Partition == "" {
+		return ErrEmptyPartition
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	id := t.ID

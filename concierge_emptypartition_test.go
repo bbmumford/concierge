@@ -8,16 +8,18 @@ import (
 
 // An empty partition names no partition, on both stores: every operation that is
 // confined to the partition it is given answers nothing, or ErrNotFound, when the
-// partition it is given is empty. The rows it could wrongly reach are stored under
-// the empty partition itself, which CreateTicket, CreateCategory and CreateArticle
-// accept, so a store that dropped the "is the partition set" half of a filter and
-// kept only "partition = ?" would answer every one of these calls with a row.
+// partition it is given is empty. The rows it could wrongly reach are rows held
+// under the empty partition itself. The stores refuse to write one
+// (ErrEmptyPartition), so the test writes them under a placeholder partition and
+// moves them to the empty one in the store's own state; a store that dropped the
+// "is the partition set" half of a filter and kept only "partition = ?" would then
+// answer every one of these calls with a row.
 //
 // Each read is checked beside a second partition's rows, so a read that returned
 // everything is caught as well as one that matched the empty partition.
 func TestAnEmptyPartitionReachesNothing(t *testing.T) {
 	eachStore(t, func(t *testing.T, s Store) {
-		blank := &Ticket{ID: "tk-blank-partition", Partition: "", UserID: "u1", Email: "a@example.com", GroupID: "g1", Status: "open", Priority: "normal"}
+		blank := &Ticket{ID: "tk-blank-partition", Partition: placeholderPartition, UserID: "u1", Email: "a@example.com", GroupID: "g1", Status: "open", Priority: "normal"}
 		named := &Ticket{ID: "tk-named-partition", Partition: "acme", UserID: "u1", Email: "a@example.com", GroupID: "g1", Status: "open", Priority: "normal"}
 		for _, tk := range []*Ticket{blank, named} {
 			if err := s.CreateTicket(ctx, tk); err != nil {
@@ -33,7 +35,7 @@ func TestAnEmptyPartitionReachesNothing(t *testing.T) {
 				t.Fatalf("AddAttachment %s: %v", tk.ID, err)
 			}
 		}
-		for _, partition := range []string{"", "acme"} {
+		for _, partition := range []string{placeholderPartition, "acme"} {
 			if err := s.CreateCategory(ctx, &KBCategory{Partition: partition, Name: "Billing", Slug: "billing"}); err != nil {
 				t.Fatalf("CreateCategory under %q: %v", partition, err)
 			}
@@ -41,6 +43,7 @@ func TestAnEmptyPartitionReachesNothing(t *testing.T) {
 				t.Fatalf("CreateArticle under %q: %v", partition, err)
 			}
 		}
+		moveToEmptyPartition(t, s)
 
 		// Tickets.
 		if got, err := s.GetTicket(ctx, "", blank.ID); !errors.Is(err, ErrNotFound) {
@@ -128,6 +131,70 @@ func TestAnEmptyPartitionReachesNothing(t *testing.T) {
 		}
 		if got, err := s.ListMessages(ctx, "acme", named.ID, true); err != nil || len(got) != 1 {
 			t.Errorf("ListMessages under its own partition: %d messages, err=%v, want 1", len(got), err)
+		}
+	})
+}
+
+// placeholderPartition holds the rows moveToEmptyPartition moves to the empty
+// partition.
+const placeholderPartition = "placeholder-for-the-empty-partition"
+
+// moveToEmptyPartition rewrites every row held under placeholderPartition to the
+// empty partition, in the store's own state, standing for a row the store holds
+// from before it refused empty-partition writes.
+func moveToEmptyPartition(t *testing.T, s Store) {
+	t.Helper()
+	switch st := s.(type) {
+	case *MemStore:
+		st.mu.Lock()
+		defer st.mu.Unlock()
+		for _, tk := range st.tickets {
+			if tk.Partition == placeholderPartition {
+				tk.Partition = ""
+			}
+		}
+		for _, c := range st.categories {
+			if c.Partition == placeholderPartition {
+				c.Partition = ""
+			}
+		}
+		for _, a := range st.articles {
+			if a.Partition == placeholderPartition {
+				a.Partition = ""
+			}
+		}
+	case *SQLStore:
+		for _, table := range []string{"concierge_tickets", "concierge_kb_categories", "concierge_kb_articles"} {
+			if _, err := st.db.ExecContext(ctx, `UPDATE `+table+` SET partition = '' WHERE partition = ?`, placeholderPartition); err != nil {
+				t.Fatalf("move %s rows: %v", table, err)
+			}
+		}
+	default:
+		t.Fatalf("no way to move rows in a %T", s)
+	}
+}
+
+// Every write that stores a ticket, category or article under no partition is
+// refused on both stores, and stores nothing.
+func TestCreatesRefuseAnEmptyPartition(t *testing.T) {
+	eachStore(t, func(t *testing.T, s Store) {
+		if err := s.CreateTicket(ctx, &Ticket{ID: "tk-1", UserID: "u1", Status: "open"}); !errors.Is(err, ErrEmptyPartition) {
+			t.Fatalf("CreateTicket: got %v, want ErrEmptyPartition", err)
+		}
+		if err := s.CreateCategory(ctx, &KBCategory{Name: "Billing", Slug: "billing"}); !errors.Is(err, ErrEmptyPartition) {
+			t.Fatalf("CreateCategory: got %v, want ErrEmptyPartition", err)
+		}
+		if err := s.UpsertCategory(ctx, &KBCategory{Name: "Billing", Slug: "billing"}); !errors.Is(err, ErrEmptyPartition) {
+			t.Fatalf("UpsertCategory: got %v, want ErrEmptyPartition", err)
+		}
+		if err := s.CreateArticle(ctx, &KBArticle{Title: "Refunds", Slug: "refunds", CategorySlug: "billing", Status: ArticleStatusPublished}); !errors.Is(err, ErrEmptyPartition) {
+			t.Fatalf("CreateArticle: got %v, want ErrEmptyPartition", err)
+		}
+		if err := s.UpsertArticle(ctx, &KBArticle{Title: "Refunds", Slug: "refunds", CategorySlug: "billing", Status: ArticleStatusPublished}); !errors.Is(err, ErrEmptyPartition) {
+			t.Fatalf("UpsertArticle: got %v, want ErrEmptyPartition", err)
+		}
+		if err := s.CreateTicket(ctx, &Ticket{ID: "tk-1", Partition: "acme", UserID: "u1", Status: "open"}); err != nil {
+			t.Fatalf("the refused ticket's id was taken: %v", err)
 		}
 	})
 }
