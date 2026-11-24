@@ -101,6 +101,9 @@ func (m *MemStore) GetTicket(_ context.Context, partition, id string) (*Ticket, 
 }
 
 func (m *MemStore) GetTicketByExternalRef(_ context.Context, refKey, refValue string) (*Ticket, error) {
+	if !validRefKey(refKey) {
+		return nil, ErrNotFound
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, t := range m.tickets {
@@ -264,6 +267,9 @@ func (m *MemStore) SetFirstResponseAt(_ context.Context, id string, at time.Time
 }
 
 func (m *MemStore) SetExternalRef(_ context.Context, ticketID, refKey, refValue string) error {
+	if !validRefKey(refKey) {
+		return ErrInvalidRefKey
+	}
 	return m.mutateTicketUnscoped(ticketID, func(t *Ticket) {
 		if t.ExternalRefs == nil {
 			t.ExternalRefs = map[string]string{}
@@ -384,6 +390,9 @@ func (m *MemStore) ListMessagesSince(_ context.Context, partition, ticketID stri
 }
 
 func (m *MemStore) SetMessageExternalRef(_ context.Context, messageID, refKey, refValue string) error {
+	if !validRefKey(refKey) {
+		return ErrInvalidRefKey
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, msg := range m.messages {

@@ -4,8 +4,30 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"regexp"
+	"strings"
 	"time"
 )
+
+// refMember is the JSON path of one ExternalRefs key as a single member of the
+// object, its name quoted so that a dotted key such as "discord.channel" names
+// that member and not a "channel" member of a nested "discord" object. It takes
+// the key as one bound parameter.
+const refMember = `'$."' || ? || '"'`
+
+// refNested is the unquoted path of a dotted key, the nested member an earlier
+// write of the key produced; reads and writes also address it while such rows
+// remain. It takes the key as one bound parameter, and is used only for a key
+// nestedRefKey admits, whose unquoted path is well formed.
+const refNested = `'$.' || ?`
+
+// nestedRefKey reports whether key is a dotted key whose unquoted JSON path
+// parses as nested members.
+var nestedRefKey = regexp.MustCompile(`^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)+$`).MatchString
+
+// validRefKey reports whether key can name an ExternalRefs member: non-empty,
+// and without the double quote that would end its quoted path.
+func validRefKey(key string) bool { return key != "" && !strings.Contains(key, `"`) }
 
 // SQLStore is the durable default Store over any database/sql driver — the shipped standalone store.
 // The package imports only database/sql (stdlib); the APP supplies the opened *sql.DB and registers
@@ -146,13 +168,44 @@ func jsonAnyMap(m map[string]any) string {
 	return string(b)
 }
 
+// readStrMap decodes a JSON object of string values. A member whose value is an
+// object, as an earlier write of a dotted ExternalRefs key nested it, is read
+// back under its dotted name ("discord": {"channel": "x"} as "discord.channel"),
+// and a member stored under the dotted name itself wins over the nested one.
 func readStrMap(s string) map[string]string {
 	if s == "" || s == "{}" {
 		return nil
 	}
-	var m map[string]string
-	_ = json.Unmarshal([]byte(s), &m)
+	var raw map[string]any
+	if json.Unmarshal([]byte(s), &raw) != nil {
+		return nil
+	}
+	m := map[string]string{}
+	flattenNested(m, "", raw)
+	for k, v := range raw {
+		if str, ok := v.(string); ok {
+			m[k] = str
+		}
+	}
+	if len(m) == 0 {
+		return nil
+	}
 	return m
+}
+
+// flattenNested copies the string members of raw's nested objects into m under
+// their dotted names.
+func flattenNested(m map[string]string, prefix string, raw map[string]any) {
+	for k, v := range raw {
+		switch val := v.(type) {
+		case map[string]any:
+			flattenNested(m, prefix+k+".", val)
+		case string:
+			if prefix != "" {
+				m[prefix+k] = val
+			}
+		}
+	}
 }
 
 func readBoolMap(s string) map[string]bool {
@@ -252,13 +305,18 @@ func (s *SQLStore) GetTicket(ctx context.Context, partition, id string) (*Ticket
 }
 
 func (s *SQLStore) GetTicketByExternalRef(ctx context.Context, refKey, refValue string) (*Ticket, error) {
-	if refValue == "" {
+	if refValue == "" || !validRefKey(refKey) {
 		return nil, ErrNotFound
 	}
 	// external_refs is a JSON object; match the exact key:value pair. json_extract keeps the store
 	// free of a side table while the adapter chooses the opaque refKey.
+	where, args := `json_extract(external_refs, `+refMember+`) = ?`, []any{refKey, refValue}
+	if nestedRefKey(refKey) {
+		where += ` OR json_extract(external_refs, ` + refNested + `) = ?`
+		args = append(args, refKey, refValue)
+	}
 	row := s.db.QueryRowContext(ctx, `SELECT `+ticketCols+` FROM concierge_tickets
-		WHERE json_extract(external_refs, '$.' || ?) = ? LIMIT 1`, refKey, refValue)
+		WHERE `+where+` LIMIT 1`, args...)
 	t, err := scanTicket(row)
 	if err == sql.ErrNoRows {
 		return nil, ErrNotFound
@@ -420,20 +478,21 @@ func (s *SQLStore) SetFirstResponseAt(ctx context.Context, id string, at time.Ti
 }
 
 func (s *SQLStore) SetExternalRef(ctx context.Context, ticketID, refKey, refValue string) error {
+	if !validRefKey(refKey) {
+		return ErrInvalidRefKey
+	}
 	// Mutate the JSON in-DB so concurrent adapters don't clobber each other's keys. An empty value
-	// removes the key (json_remove), matching the MemStore delete-on-empty contract.
-	var set string
-	var arg any
-	if refValue == "" {
-		set = `external_refs = json_remove(external_refs, '$.' || ?)`
-		arg = refKey
-	} else {
-		set = `external_refs = json_set(external_refs, '$.' || ?, ?)`
+	// removes the key (json_remove), matching the MemStore delete-on-empty contract. A dotted key's
+	// nested member, written before keys were quoted, is removed in the same statement, so the row
+	// holds the key once.
+	refs, args := `external_refs`, []any{}
+	if nestedRefKey(refKey) {
+		refs, args = `json_remove(external_refs, `+refNested+`)`, append(args, refKey)
 	}
 	if refValue == "" {
-		return s.touchTicketUnscoped(ctx, ticketID, set, arg)
+		return s.touchTicketUnscoped(ctx, ticketID, `external_refs = json_remove(`+refs+`, `+refMember+`)`, append(args, refKey)...)
 	}
-	return s.touchTicketUnscoped(ctx, ticketID, set, refKey, refValue)
+	return s.touchTicketUnscoped(ctx, ticketID, `external_refs = json_set(`+refs+`, `+refMember+`, ?)`, append(args, refKey, refValue)...)
 }
 
 func (s *SQLStore) GetTicketStats(ctx context.Context, partition, userID string) (*TicketStats, error) {

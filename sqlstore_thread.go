@@ -147,9 +147,16 @@ func (s *SQLStore) ListMessagesSince(ctx context.Context, partition, ticketID st
 }
 
 func (s *SQLStore) SetMessageExternalRef(ctx context.Context, messageID, refKey, refValue string) error {
+	if !validRefKey(refKey) {
+		return ErrInvalidRefKey
+	}
+	refs, args := `external_refs`, []any{}
+	if nestedRefKey(refKey) {
+		refs, args = `json_remove(external_refs, `+refNested+`)`, append(args, refKey)
+	}
 	res, err := s.db.ExecContext(ctx, `UPDATE concierge_messages
-		SET external_refs = json_set(external_refs, '$.' || ?, ?) WHERE id = ?`,
-		refKey, refValue, messageID)
+		SET external_refs = json_set(`+refs+`, `+refMember+`, ?) WHERE id = ?`,
+		append(args, refKey, refValue, messageID)...)
 	if err != nil {
 		return err
 	}

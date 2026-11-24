@@ -9,6 +9,12 @@ import (
 // ErrNotFound is returned by single-record reads when the record does not exist.
 var ErrNotFound = errors.New("concierge: not found")
 
+// ErrInvalidRefKey refuses an ExternalRefs key that is empty or holds a double
+// quote. A key is any other opaque name, dotted ones such as "discord.channel"
+// included; the SQL store addresses it as one quoted member of the JSON object,
+// and a quote would end that member's name early.
+var ErrInvalidRefKey = errors.New("concierge: an external ref key must be non-empty and hold no double quote")
+
 // ErrEmptyPartition refuses a write that would store a ticket, category or
 // article under no partition. Every read confined to a partition answers
 // nothing for the empty one, so such a row could never be read back by its
