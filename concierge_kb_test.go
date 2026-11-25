@@ -387,7 +387,11 @@ func TestInitSchemaMakesSlugsUniqueOverAnExistingTable(t *testing.T) {
 		t.Fatal(err)
 	}
 	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { db.Close() })
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("db.Close: %v", err)
+		}
+	})
 	s := NewSQLStore(db)
 	if err := s.InitSchema(ctx); err != nil {
 		t.Fatalf("InitSchema: %v", err)
@@ -405,7 +409,9 @@ func TestInitSchemaMakesSlugsUniqueOverAnExistingTable(t *testing.T) {
 		}
 		indexes = append(indexes, name)
 	}
-	rows.Close()
+	if err := rows.Close(); err != nil {
+		t.Fatalf("rows.Close: %v", err)
+	}
 	if len(indexes) != 2 {
 		t.Fatalf("InitSchema must build one unique slug index on each KB table; got %v", indexes)
 	}
@@ -441,7 +447,11 @@ func TestInitSchemaRefusesAnExistingTableHoldingADuplicateKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { db.Close() })
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("db.Close: %v", err)
+		}
+	})
 	s := NewSQLStore(db)
 	if err := s.InitSchema(ctx); err != nil {
 		t.Fatalf("InitSchema: %v", err)

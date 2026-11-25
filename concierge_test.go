@@ -23,7 +23,11 @@ func eachStore(t *testing.T, fn func(t *testing.T, s Store)) {
 			t.Fatal(err)
 		}
 		db.SetMaxOpenConns(1) // keep the :memory: DB on one connection
-		t.Cleanup(func() { db.Close() })
+		t.Cleanup(func() {
+			if err := db.Close(); err != nil {
+				t.Errorf("db.Close: %v", err)
+			}
+		})
 		s := NewSQLStore(db)
 		if err := s.InitSchema(ctx); err != nil {
 			t.Fatalf("InitSchema: %v", err)
@@ -74,7 +78,9 @@ func TestTicket_StatusTimestampsAndBreach(t *testing.T) {
 	eachStore(t, func(t *testing.T, s Store) {
 		now := time.Unix(1_000_000, 0).UTC()
 		tk := &Ticket{Partition: "acme", Status: "open", CreatedAt: now.Add(-2 * time.Hour)}
-		s.CreateTicket(ctx, tk)
+		if err := s.CreateTicket(ctx, tk); err != nil {
+			t.Fatalf("s.CreateTicket: %v", err)
+		}
 		// resolving stamps ResolvedAt
 		if err := s.UpdateTicketStatus(ctx, "acme", tk.ID, "resolved"); err != nil {
 			t.Fatal(err)
@@ -89,7 +95,9 @@ func TestTicket_StatusTimestampsAndBreach(t *testing.T) {
 		}
 		// breach: an open unresponded 2h-old ticket breaches a 1h first-response SLA
 		open := &Ticket{Partition: "acme", Status: "open", CreatedAt: now.Add(-2 * time.Hour)}
-		s.CreateTicket(ctx, open)
+		if err := s.CreateTicket(ctx, open); err != nil {
+			t.Fatalf("s.CreateTicket: %v", err)
+		}
 		breached, _ := s.ListBreachedTickets(ctx, time.Hour, 0, now)
 		found := false
 		for _, b := range breached {
@@ -102,8 +110,12 @@ func TestTicket_StatusTimestampsAndBreach(t *testing.T) {
 		}
 		// a closed ticket never breaches, even past every threshold
 		closed := &Ticket{Partition: "acme", Status: "open", CreatedAt: now.Add(-9 * time.Hour)}
-		s.CreateTicket(ctx, closed)
-		s.UpdateTicketStatus(ctx, "acme", closed.ID, "closed")
+		if err := s.CreateTicket(ctx, closed); err != nil {
+			t.Fatalf("s.CreateTicket: %v", err)
+		}
+		if err := s.UpdateTicketStatus(ctx, "acme", closed.ID, "closed"); err != nil {
+			t.Fatalf("s.UpdateTicketStatus: %v", err)
+		}
 		past, _ := s.ListBreachedTickets(ctx, time.Hour, time.Hour, now)
 		for _, b := range past {
 			if b.ID == closed.ID {
@@ -116,9 +128,13 @@ func TestTicket_StatusTimestampsAndBreach(t *testing.T) {
 func TestTicket_StatsAndPaging(t *testing.T) {
 	eachStore(t, func(t *testing.T, s Store) {
 		for _, st := range []string{"open", "open", "waiting", "closed", "resolved"} {
-			s.CreateTicket(ctx, &Ticket{Partition: "acme", UserID: "u1", Status: st, Category: "billing"})
+			if err := s.CreateTicket(ctx, &Ticket{Partition: "acme", UserID: "u1", Status: st, Category: "billing"}); err != nil {
+				t.Fatalf("s.CreateTicket: %v", err)
+			}
 		}
-		s.CreateTicket(ctx, &Ticket{Partition: "other", UserID: "u2", Status: "open"})
+		if err := s.CreateTicket(ctx, &Ticket{Partition: "other", UserID: "u2", Status: "open"}); err != nil {
+			t.Fatalf("s.CreateTicket: %v", err)
+		}
 		stats, _ := s.GetTicketStats(ctx, "acme", "u1")
 		if stats.Total != 5 || stats.Open != 2 || stats.Waiting != 1 || stats.Closed != 2 {
 			t.Fatalf("stats partition-scoped mismatch: %+v", stats)
@@ -174,9 +190,15 @@ func TestTicket_StatsAndPaging(t *testing.T) {
 func TestMessages_InternalFilterAndPartitionGuard(t *testing.T) {
 	eachStore(t, func(t *testing.T, s Store) {
 		tk := &Ticket{Partition: "acme", Status: "open"}
-		s.CreateTicket(ctx, tk)
-		s.AddMessage(ctx, &TicketMessage{TicketID: tk.ID, AuthorType: "user", Content: "hi", CreatedAt: time.Unix(1001, 0)})
-		s.AddMessage(ctx, &TicketMessage{TicketID: tk.ID, AuthorType: "agent", Content: "note", IsInternal: true, CreatedAt: time.Unix(1002, 0)})
+		if err := s.CreateTicket(ctx, tk); err != nil {
+			t.Fatalf("s.CreateTicket: %v", err)
+		}
+		if err := s.AddMessage(ctx, &TicketMessage{TicketID: tk.ID, AuthorType: "user", Content: "hi", CreatedAt: time.Unix(1001, 0)}); err != nil {
+			t.Fatalf("s.AddMessage: %v", err)
+		}
+		if err := s.AddMessage(ctx, &TicketMessage{TicketID: tk.ID, AuthorType: "agent", Content: "note", IsInternal: true, CreatedAt: time.Unix(1002, 0)}); err != nil {
+			t.Fatalf("s.AddMessage: %v", err)
+		}
 		// public view excludes internal
 		if pub, _ := s.ListMessages(ctx, "acme", tk.ID, false); len(pub) != 1 || pub[0].Content != "hi" {
 			t.Fatalf("public message list must exclude internal notes; got %+v", pub)
@@ -198,8 +220,12 @@ func TestMessages_InternalFilterAndPartitionGuard(t *testing.T) {
 func TestEvents_AppendOnlyAudit(t *testing.T) {
 	eachStore(t, func(t *testing.T, s Store) {
 		tk := &Ticket{Partition: "acme", Status: "open"}
-		s.CreateTicket(ctx, tk)
-		s.AddTicketEvent(ctx, &TicketEvent{TicketID: tk.ID, EventType: "status_change", OldValue: "open", NewValue: "resolved", CreatedAt: time.Unix(1001, 0)})
+		if err := s.CreateTicket(ctx, tk); err != nil {
+			t.Fatalf("s.CreateTicket: %v", err)
+		}
+		if err := s.AddTicketEvent(ctx, &TicketEvent{TicketID: tk.ID, EventType: "status_change", OldValue: "open", NewValue: "resolved", CreatedAt: time.Unix(1001, 0)}); err != nil {
+			t.Fatalf("s.AddTicketEvent: %v", err)
+		}
 		ev, _ := s.ListTicketEvents(ctx, "acme", tk.ID)
 		if len(ev) != 1 || ev[0].NewValue != "resolved" {
 			t.Fatalf("event audit must record the transition; got %+v", ev)
@@ -213,8 +239,12 @@ func TestEvents_AppendOnlyAudit(t *testing.T) {
 func TestAttachments_PartitionGuard(t *testing.T) {
 	eachStore(t, func(t *testing.T, s Store) {
 		tk := &Ticket{Partition: "acme", Status: "open"}
-		s.CreateTicket(ctx, tk)
-		s.AddAttachment(ctx, &Attachment{TicketID: tk.ID, Filename: "log.txt", SizeBytes: 42, StorageKey: "k1"})
+		if err := s.CreateTicket(ctx, tk); err != nil {
+			t.Fatalf("s.CreateTicket: %v", err)
+		}
+		if err := s.AddAttachment(ctx, &Attachment{TicketID: tk.ID, Filename: "log.txt", SizeBytes: 42, StorageKey: "k1"}); err != nil {
+			t.Fatalf("s.AddAttachment: %v", err)
+		}
 		att, _ := s.ListAttachments(ctx, "acme", tk.ID)
 		if len(att) != 1 || att[0].SizeBytes != 42 {
 			t.Fatalf("attachment metadata mismatch; got %+v", att)
@@ -227,9 +257,15 @@ func TestAttachments_PartitionGuard(t *testing.T) {
 
 func TestKB_SearchAndCategoryScope(t *testing.T) {
 	eachStore(t, func(t *testing.T, s Store) {
-		s.CreateCategory(ctx, &KBCategory{Partition: "acme", Name: "Billing", Slug: "billing"})
-		s.CreateArticle(ctx, &KBArticle{Partition: "acme", Title: "Refund policy", Slug: "refunds", Content: "how to get a refund", CategorySlug: "billing", Status: ArticleStatusPublished})
-		s.CreateArticle(ctx, &KBArticle{Partition: "acme", Title: "Login help", Slug: "login", Content: "reset password", CategorySlug: "account", Status: ArticleStatusPublished})
+		if err := s.CreateCategory(ctx, &KBCategory{Partition: "acme", Name: "Billing", Slug: "billing"}); err != nil {
+			t.Fatalf("s.CreateCategory: %v", err)
+		}
+		if err := s.CreateArticle(ctx, &KBArticle{Partition: "acme", Title: "Refund policy", Slug: "refunds", Content: "how to get a refund", CategorySlug: "billing", Status: ArticleStatusPublished}); err != nil {
+			t.Fatalf("s.CreateArticle: %v", err)
+		}
+		if err := s.CreateArticle(ctx, &KBArticle{Partition: "acme", Title: "Login help", Slug: "login", Content: "reset password", CategorySlug: "account", Status: ArticleStatusPublished}); err != nil {
+			t.Fatalf("s.CreateArticle: %v", err)
+		}
 		if got, _ := s.SearchArticles(ctx, "acme", "refund"); len(got) != 1 || got[0].Slug != "refunds" {
 			t.Fatalf("search must match title/content; got %+v", got)
 		}
@@ -243,7 +279,9 @@ func TestKB_SearchAndCategoryScope(t *testing.T) {
 			t.Fatalf("GetCategoryBySlug: %+v %v", c, err)
 		}
 		a, _ := s.GetArticleBySlug(ctx, "acme", "billing", "refunds")
-		s.IncrementArticleViewCount(ctx, a.ID)
+		if err := s.IncrementArticleViewCount(ctx, a.ID); err != nil {
+			t.Fatalf("s.IncrementArticleViewCount: %v", err)
+		}
 		a2, _ := s.GetArticleBySlug(ctx, "acme", "billing", "refunds")
 		if a2.ViewCount != 1 {
 			t.Fatalf("view count must increment; got %d", a2.ViewCount)

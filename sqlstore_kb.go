@@ -151,7 +151,7 @@ func (s *SQLStore) ListCategories(ctx context.Context, partition string) ([]*KBC
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer closeRows(rows)
 	var out []*KBCategory
 	for rows.Next() {
 		c, err := scanCategory(rows)
@@ -274,7 +274,7 @@ func (s *SQLStore) queryArticles(ctx context.Context, where string, args ...any)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer closeRows(rows)
 	var out []*KBArticle
 	for rows.Next() {
 		a, err := scanArticle(rows)

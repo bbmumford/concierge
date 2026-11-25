@@ -126,7 +126,7 @@ func (s *SQLStore) listMessages(ctx context.Context, partition, ticketID string,
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer closeRows(rows)
 	var out []*TicketMessage
 	for rows.Next() {
 		msg, err := scanMessage(rows)
@@ -194,7 +194,7 @@ func (s *SQLStore) ListTicketEvents(ctx context.Context, partition, ticketID str
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer closeRows(rows)
 	var out []*TicketEvent
 	for rows.Next() {
 		var e TicketEvent
@@ -237,7 +237,7 @@ func (s *SQLStore) ListAttachments(ctx context.Context, partition, ticketID stri
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer closeRows(rows)
 	var out []*Attachment
 	for rows.Next() {
 		var a Attachment

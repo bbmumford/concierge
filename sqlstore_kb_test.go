@@ -22,7 +22,11 @@ func TestSQLStore_AKBWriteRefusedForAnotherReasonReturnsTheEnginesError(t *testi
 		t.Fatal(err)
 	}
 	db.SetMaxOpenConns(1) // query_only is per connection
-	t.Cleanup(func() { db.Close() })
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("db.Close: %v", err)
+		}
+	})
 	s := NewSQLStore(db)
 	if err := s.InitSchema(ctx); err != nil {
 		t.Fatalf("InitSchema: %v", err)

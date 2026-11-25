@@ -102,7 +102,11 @@ func TestSQLStoreReadsANestedExternalRef(t *testing.T) {
 		t.Fatal(err)
 	}
 	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { db.Close() })
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("db.Close: %v", err)
+		}
+	})
 	s := NewSQLStore(db)
 	if err := s.InitSchema(ctx); err != nil {
 		t.Fatal(err)

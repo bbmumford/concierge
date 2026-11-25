@@ -330,7 +330,7 @@ func (s *SQLStore) queryTickets(ctx context.Context, where string, args ...any) 
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer closeRows(rows)
 	var out []*Ticket
 	for rows.Next() {
 		t, err := scanTicket(rows)
@@ -377,7 +377,7 @@ func (s *SQLStore) ListAllTickets(ctx context.Context, actorType, actorID, reaso
 	if err != nil {
 		return nil, 0, err
 	}
-	defer rows.Close()
+	defer closeRows(rows)
 	var out []*Ticket
 	for rows.Next() {
 		t, err := scanTicket(rows)
@@ -502,7 +502,7 @@ func (s *SQLStore) GetTicketStats(ctx context.Context, partition, userID string)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer closeRows(rows)
 	var st TicketStats
 	for rows.Next() {
 		var status string
@@ -522,3 +522,9 @@ func (s *SQLStore) GetTicketStats(ctx context.Context, partition, userID string)
 	}
 	return &st, rows.Err()
 }
+
+// closeRows is the deferred Close of every query's rows in this package.
+// database/sql closes rows itself once Next reports the end, so a normal return
+// leaves nothing to close, and an early return already carries the error that
+// stopped the read; its result is dropped.
+func closeRows(rows *sql.Rows) { _ = rows.Close() }
