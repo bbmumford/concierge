@@ -23,6 +23,14 @@ articles, err := store.SearchArticles(ctx, partition, "reset password")
 
 Everything goes through the `Store` interface, which both stores implement.
 
+The desk half is a second interface, `DeskStore`, which both stores also implement and `InitSchema` also builds: contacts with their channel identities, thread refs that record a channel object once (`ClaimThreadRef`), teams, queues and assignment, SLA policies counted in business hours with pauses (`EvaluateSLA`), and one satisfaction rating per ticket.
+
+```go
+var desk concierge.DeskStore = store
+claimed, err := desk.ClaimThreadRef(ctx, &concierge.ThreadRef{Channel: "chat.message", ExternalID: "1/42", Partition: p, TicketID: id})
+if !claimed { /* a repeated delivery: the ref now names the first ticket */ }
+```
+
 ## Consumers
 
 ORBTR library (its support host), the help.orbtr.io endpoint and io tools, and the node.orbtr.ai endpoint.

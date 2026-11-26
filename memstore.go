@@ -23,6 +23,7 @@ type MemStore struct {
 	attachments []*Attachment
 	categories  map[string]*KBCategory
 	articles    map[string]*KBArticle
+	desk        memDesk
 	now         func() time.Time
 	newID       func() string
 }

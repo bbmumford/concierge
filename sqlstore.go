@@ -115,7 +115,7 @@ func (s *SQLStore) InitSchema(ctx context.Context) error {
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_concierge_kb_categories_slug ON concierge_kb_categories(partition, slug)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_concierge_kb_articles_slug ON concierge_kb_articles(partition, category_slug, slug)`,
 	}
-	for _, q := range stmts {
+	for _, q := range append(stmts, deskSchema...) {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
 			return err
 		}
