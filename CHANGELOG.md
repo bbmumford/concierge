@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/bbmumford/concierge/compare/v0.1.0...v0.2.0) (2026-11-28)
+
+
+### Features
+
+* a desk half beside the ticket store: contacts with channel identities, thread refs claimed once per channel object, teams, queues and assignment, SLA policies with business hours and pause, and ratings ([430f3fc](https://github.com/bbmumford/concierge/commit/430f3fc22dab90f4f0ce7e782082f285ad824054))
+
 ## 0.1.0 (2026-11-25)
 
 
